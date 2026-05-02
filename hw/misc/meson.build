@@ -165,5 +165,8 @@ specific_ss.add(when: 'CONFIG_RISCV_MIPS_CPC', if_true: files('riscv_cpc.c'))
 
 system_ss.add(when: 'CONFIG_SBSA_REF', if_true: files('sbsa_ec.c'))
 
+# Ingenic devices
+system_ss.add(when: 'CONFIG_INGENIC_T31_OST', if_true: files('ingenic-t31-ost.c'))
+
 # HPPA devices
 system_ss.add(when: 'CONFIG_LASI', if_true: files('lasi.c'))
