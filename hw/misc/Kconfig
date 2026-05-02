@@ -257,6 +257,9 @@ config XLNX_VERSAL_TRNG
 config INGENIC_T31_CPM
     bool
 
+config INGENIC_T31_DDRC
+    bool
+
 config INGENIC_T31_OST
     bool
 
