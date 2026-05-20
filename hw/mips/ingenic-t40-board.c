@@ -1,5 +1,5 @@
 /*
- * Ingenic A1 board/machine emulation
+ * Ingenic T40/T41 board/machine emulation
  *
  * Copyright (C) 2026 Alfonso Gamboa <gtxent@gmail.com>
  *
@@ -13,7 +13,7 @@
 #include "hw/core/boards.h"
 #include "hw/core/clock.h"
 #include "hw/core/loader.h"
-#include "hw/mips/ingenic-a1.h"
+#include "hw/mips/ingenic-t40.h"
 #include "hw/net/ingenic-t31-gmac.h"
 #include "hw/sd/sd.h"
 #include "system/block-backend.h"
@@ -25,7 +25,7 @@
 #include "system/reset.h"
 #include "elf.h"
 
-static void ingenic_a1_uimage_post_reset(void *opaque)
+static void ingenic_t40_uimage_post_reset(void *opaque)
 {
     hwaddr base = (hwaddr)(uintptr_t)opaque;
     uint8_t lcr = 0x03;
@@ -38,11 +38,11 @@ typedef struct {
     uint32_t sp;
     bool is_uimage;
     uint32_t argv[2];
-} A1BootResetCtx;
+} T40BootResetCtx;
 
-static void ingenic_a1_cpu_reset(void *opaque)
+static void ingenic_t40_cpu_reset(void *opaque)
 {
-    A1BootResetCtx *b = opaque;
+    T40BootResetCtx *b = opaque;
     CPUMIPSState *env = &b->cpu->env;
 
     env->active_tc.PC = (int32_t)b->pc;
@@ -56,40 +56,38 @@ static void ingenic_a1_cpu_reset(void *opaque)
     }
 }
 
-static void ingenic_a1_board_init(MachineState *machine)
+static void ingenic_t40_board_init(MachineState *machine)
 {
-    IngenicA1State *s;
+    IngenicT40State *s;
     MIPSCPU *cpu;
     Clock *cpuclk;
 
-    s = INGENIC_A1(object_new(TYPE_INGENIC_A1));
+    s = INGENIC_T40(object_new(TYPE_INGENIC_T40));
     object_property_add_child(OBJECT(machine), "soc", OBJECT(s));
     object_unref(OBJECT(s));
 
     if (!s->soc_variant || !s->soc_variant[0]) {
-        qdev_prop_set_string(DEVICE(s), "soc-variant", "a1n");
+        const char *mname = MACHINE_GET_CLASS(machine)->name;
+        if (strstr(mname, "t41")) {
+            qdev_prop_set_string(DEVICE(s), "soc-variant", "t41nq");
+        } else {
+            qdev_prop_set_string(DEVICE(s), "soc-variant", "t40n");
+        }
     }
 
     cpuclk = clock_new(OBJECT(machine), "cpu-refclk");
-    clock_set_hz(cpuclk, 1200000000);
+    clock_set_hz(cpuclk, 800000000);
 
     cpu = mips_cpu_create_with_clock(machine->cpu_type, cpuclk, false);
     cpu_mips_irq_init_cpu(cpu);
     cpu_mips_clock_init(cpu);
 
-    {
-        NetClientState *nc = qemu_find_netdev("n0");
-        if (nc) {
-            qdev_prop_set_netdev(DEVICE(s), "netdev", nc);
-        }
-    }
-
     qdev_realize(DEVICE(s), NULL, &error_fatal);
 
-    /* Core OST -> MIPS IP4 (clockevent) */
+    /* Core OST -> MIPS IP4 */
     s->cost_irq = cpu->env.irq[4];
 
-    /* INTC -> MIPS IP2 (peripheral interrupts) */
+    /* INTC -> MIPS IP2 */
     sysbus_connect_irq(SYS_BUS_DEVICE(&s->intc), 0, cpu->env.irq[2]);
 
     /* Attach SD/MMC cards */
@@ -103,7 +101,7 @@ static void ingenic_a1_board_init(MachineState *machine)
         }
         bus = qdev_get_child_bus(DEVICE(&s->msc[i]), "sd-bus");
         if (!bus) {
-            error_report("ingenic-a1: msc%d sd-bus not found", i);
+            error_report("ingenic-t40: msc%d sd-bus not found", i);
             exit(1);
         }
         DeviceState *card = qdev_new(TYPE_SD_CARD);
@@ -111,9 +109,9 @@ static void ingenic_a1_board_init(MachineState *machine)
         qdev_realize_and_unref(card, bus, &error_fatal);
     }
 
-    /* SDRAM at physical 0x00000000 */
+    /* SDRAM */
     memory_region_add_subregion(get_system_memory(),
-                                s->memmap[INGENIC_A1_DEV_SDRAM],
+                                s->memmap[INGENIC_T40_DEV_SDRAM],
                                 machine->ram);
 
     if (machine->kernel_filename) {
@@ -137,9 +135,9 @@ static void ingenic_a1_board_init(MachineState *machine)
         }
         if (size < 0) {
             size = load_image_targphys(machine->kernel_filename,
-                                       s->memmap[INGENIC_A1_DEV_SDRAM],
+                                       s->memmap[INGENIC_T40_DEV_SDRAM],
                                        machine->ram_size, NULL);
-            entry = s->memmap[INGENIC_A1_DEV_SDRAM];
+            entry = s->memmap[INGENIC_T40_DEV_SDRAM];
         }
         if (size < 0) {
             error_report("could not load kernel '%s'",
@@ -158,9 +156,9 @@ static void ingenic_a1_board_init(MachineState *machine)
         cpu->env.active_tc.PC = (int32_t)entry;
 
         if (is_uimage) {
-            qemu_register_reset(ingenic_a1_uimage_post_reset,
+            qemu_register_reset(ingenic_t40_uimage_post_reset,
                                 (void *)(uintptr_t)
-                                s->memmap[INGENIC_A1_DEV_UART1]);
+                                s->memmap[INGENIC_T40_DEV_UART1]);
 
             const char *cmdline = machine->kernel_cmdline ?
                 machine->kernel_cmdline : "";
@@ -187,11 +185,7 @@ static void ingenic_a1_board_init(MachineState *machine)
             cpu->env.active_tc.gpr[7] = 0;
         }
     } else {
-        /*
-         * Boot from flash image. Same Ingenic SPL header format as
-         * XBurst1: magic 0x03040506 at offset 0, SPL size at offset 12.
-         * SPL linked at 0x80001000, code starts at +0x800 past header.
-         */
+        /* Boot from flash image */
         DriveInfo *di = drive_get(IF_MTD, 0, 0);
         if (!di) {
             di = drive_get(IF_PFLASH, 0, 0);
@@ -237,13 +231,13 @@ static void ingenic_a1_board_init(MachineState *machine)
             (int32_t)((spl_phys + 0x800) | 0x80000000);
     }
 
-    /* Set stack to top of SRAM */
+    /* Stack to top of SRAM */
     cpu->env.active_tc.gpr[29] =
-        (int32_t)(s->memmap[INGENIC_A1_DEV_SRAM] +
-                  INGENIC_A1_SRAM_SIZE + 0x80000000);
+        (int32_t)(s->memmap[INGENIC_T40_DEV_SRAM] +
+                  INGENIC_T40_SRAM_SIZE + 0x80000000);
 
     {
-        A1BootResetCtx *b = g_new0(A1BootResetCtx, 1);
+        T40BootResetCtx *b = g_new0(T40BootResetCtx, 1);
         b->cpu = cpu;
         b->pc = (uint32_t)cpu->env.active_tc.PC;
         b->sp = (uint32_t)cpu->env.active_tc.gpr[29];
@@ -251,19 +245,32 @@ static void ingenic_a1_board_init(MachineState *machine)
             b->is_uimage = (cpu->env.active_tc.gpr[4] == 2);
             b->argv[0] = (uint32_t)cpu->env.active_tc.gpr[5];
         }
-        qemu_register_reset(ingenic_a1_cpu_reset, b);
+        qemu_register_reset(ingenic_t40_cpu_reset, b);
     }
 }
 
-static void ingenic_a1_machine_init(MachineClass *mc)
+static void ingenic_t40_machine_init(MachineClass *mc)
 {
-    mc->desc = "Ingenic A1 (XBurst2 MIPS32r2)";
-    mc->init = ingenic_a1_board_init;
+    mc->desc = "Ingenic T40 (XBurst2 MIPS32r2)";
+    mc->init = ingenic_t40_board_init;
     mc->default_cpu_type = MIPS_CPU_TYPE_NAME("XBurst2");
     mc->default_ram_size = 256 * MiB;
-    mc->default_ram_id = "ingenic-a1.sdram";
+    mc->default_ram_id = "ingenic-t40.sdram";
     mc->max_cpus = 1;
     mc->default_nic = TYPE_INGENIC_T31_GMAC;
 }
 
-DEFINE_MACHINE("ingenic-a1", ingenic_a1_machine_init)
+DEFINE_MACHINE("ingenic-t40", ingenic_t40_machine_init)
+
+static void ingenic_t41_machine_init(MachineClass *mc)
+{
+    mc->desc = "Ingenic T41 (XBurst2 MIPS32r2)";
+    mc->init = ingenic_t40_board_init;
+    mc->default_cpu_type = MIPS_CPU_TYPE_NAME("XBurst2");
+    mc->default_ram_size = 256 * MiB;
+    mc->default_ram_id = "ingenic-t40.sdram";
+    mc->max_cpus = 1;
+    mc->default_nic = TYPE_INGENIC_T31_GMAC;
+}
+
+DEFINE_MACHINE("ingenic-t41", ingenic_t41_machine_init)
