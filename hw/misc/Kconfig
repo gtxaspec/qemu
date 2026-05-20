@@ -254,6 +254,9 @@ config IOSB
 config XLNX_VERSAL_TRNG
     bool
 
+config INGENIC_A1_CPM
+    bool
+
 config INGENIC_T31_CPM
     bool
 
@@ -261,6 +264,9 @@ config INGENIC_T31_DDRC
     bool
 
 config INGENIC_T31_SFC
+    bool
+
+config INGENIC_A1_SFC
     bool
 
 config INGENIC_T31_OST
