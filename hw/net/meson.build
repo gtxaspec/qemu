@@ -70,5 +70,6 @@ stub_ss.add(files('rocker/rocker-stubs.c'))
 system_ss.add(files('rocker/rocker-hmp-cmds.c'))
 
 system_ss.add(when: 'CONFIG_INGENIC_T31_GMAC', if_true: files('ingenic-t31-gmac.c'))
+system_ss.add(when: 'CONFIG_INGENIC_A1_XGMAC', if_true: files('ingenic-a1-xgmac.c'))
 
 subdir('can')
