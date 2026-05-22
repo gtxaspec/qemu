@@ -160,3 +160,6 @@ config CAN_CTUCANFD_PCI
 
 config INGENIC_T31_GMAC
     bool
+
+config INGENIC_A1_XGMAC
+    bool
