@@ -18,7 +18,7 @@ config ARM_SBCON_I2C
     bool
     select BITBANG_I2C
 
-config INGENIC_T31_I2C
+config INGENIC_I2C
     bool
     select I2C
 
