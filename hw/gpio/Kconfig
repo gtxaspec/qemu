@@ -34,5 +34,5 @@ config ZAURUS_SCOOP
 config CADENCE_GPIO
     bool
 
-config INGENIC_T31_GPIO
+config INGENIC_GPIO
     bool
