@@ -1951,6 +1951,14 @@ if get_option('png').allowed() and have_system
    png = dependency('libpng', version: '>=1.6.34', required: get_option('png'),
                     method: 'pkg-config')
 endif
+libavcodec = not_found
+libavutil = not_found
+if get_option('ingenic_vdec_avcodec').allowed() and have_system
+  libavcodec = dependency('libavcodec', version: '>=61', method: 'pkg-config',
+                          required: get_option('ingenic_vdec_avcodec'))
+  libavutil = dependency('libavutil', method: 'pkg-config',
+                         required: get_option('ingenic_vdec_avcodec'))
+endif
 vnc = not_found
 jpeg = not_found
 sasl = not_found
@@ -2519,6 +2527,8 @@ config_host_data.set('CONFIG_VMNET', vmnet.found())
 config_host_data.set('CONFIG_VHOST_USER_BLK_SERVER', have_vhost_user_blk_server)
 config_host_data.set('CONFIG_VDUSE_BLK_EXPORT', have_vduse_blk_export)
 config_host_data.set('CONFIG_PNG', png.found())
+config_host_data.set('CONFIG_INGENIC_VDEC_AVCODEC',
+                     libavcodec.found() and libavutil.found())
 config_host_data.set('CONFIG_VNC', vnc.found())
 config_host_data.set('CONFIG_VNC_JPEG', jpeg.found())
 config_host_data.set('CONFIG_VNC_SASL', sasl.found())
@@ -4949,6 +4959,7 @@ summary_info += {'GTK support':       gtk}
 summary_info += {'pixman':            pixman}
 summary_info += {'VTE support':       vte}
 summary_info += {'PNG support':       png}
+summary_info += {'Ingenic VDEC libavcodec': libavcodec.found() and libavutil.found()}
 summary_info += {'VNC support':       vnc}
 if vnc.found()
   summary_info += {'VNC SASL support':  sasl}
