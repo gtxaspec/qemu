@@ -156,6 +156,7 @@ RUN meson setup _build --prefix=$TARGET --cross-file=/cross.meson \
 #        which isn't detected during meson setup.
 RUN sed -i -E "/#define HAVE_POSIX_SPAWN 1/d" ./_build/config.h
 RUN sed -i -E "/#define HAVE_PTHREAD_GETNAME_NP 1/d" ./_build/config.h
+RUN sed -i -E "/#define HAVE_PTHREAD_GETAFFINITY_NP 1/d" ./_build/config.h
 RUN meson install -C _build
 
 FROM build-base-common
