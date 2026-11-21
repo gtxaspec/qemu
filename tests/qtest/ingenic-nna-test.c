@@ -754,6 +754,79 @@ static void test_engine_t40_3x3(void)
     nn_run_on("ingenic-t40", g, 1024, 0x3e980461);
 }
 
+/*
+ * The T41's F RAM in a layout of two planes 128 pixels apart (0x37 = 0x20)
+ * and rows 16 pixels apart (0x39): 40 lines of full bytes written in turn
+ * from line 0 by engine/add's WFCW program. Slice k of a line's bytes is
+ * kept 0x37 / 4 * k = 8 lines on, over what was there, so the lines the
+ * planes read hold slices of several written lines, and a read sums its
+ * four slices back. One tap, the planes of 0x3c, weights 3 and 9 on the
+ * diagonal: a sum is 3 * a + 9 * b of the two planes' features, as a T41NQ
+ * gives it for this fill.
+ */
+static void test_engine_f_slices(void)
+{
+    static const uint16_t regs[][2] = {
+        { 0x28, 2 }, { 0x46, 0 }, { 0x29, 0 }, { 0x2b, 0 }, { 0x3b, 0x33 },
+        { 0x55, 2 }, { 0x44, 3 }, { 0x45, 2 }, { 0x3a, 0 }, { 0x37, 0x20 },
+        { 0x39, 0x10 }, { 0x3e, 1 }, { 0x3c, 1 }, { 0x58, 0 },
+        { 0x59, 0x0801 }, { 0x5a, 1 },
+    };
+    static const uint8_t quarter[4] = { 0x00, 0x02, 0x04, 0x07 };
+    static const uint8_t weight[2] = { 3, 9 };
+    enum { LINES = 40, D = 0x20 / 4 };
+    g_autofree NnProg *g = g_new0(NnProg, 1);
+    g_autofree uint8_t *out = NULL;
+    uint8_t w[256], line[128], ram[LINES + 3 * D][128] = { 0 };
+
+    add(g, NN_CMD, 0);
+    for (unsigned i = 0; i < ARRAY_SIZE(regs); i++) {
+        add_word(g, NN_RWR, regs[i][0], regs[i][1]);
+    }
+    add(g, NN_CMD, 0x60);
+    add_word(g, NN_RWR, 0x5c, 0);
+    for (unsigned t = 0; t < 2; t++) {
+        for (unsigned k = 0; k < 4; k++) {
+            memset(w, 0, sizeof(w));
+            for (unsigned c = 0; c < 32; c++) {
+                w[c * 8 + c / 4] = (weight[t] >> (2 * k) & 3) << (2 * (c % 4));
+            }
+            for (int q = 0; q < 4; q++) {
+                memcpy(add(g, NN_DWR, quarter[q])->data, &w[64 * q], 64);
+            }
+        }
+    }
+    add_word(g, NN_RWR, 0x50, 0);
+    for (unsigned l = 0; l < LINES; l++) {
+        for (unsigned i = 0; i < 128; i++) {
+            line[i] = l * 29 + i * 7 + 3;
+            for (unsigned k = 0; k < 4; k++) {
+                ram[l + k * D][i] = line[i] >> (2 * k) & 3;
+            }
+        }
+        memcpy(add(g, NN_DWR, 0x20)->data, line, 64);
+        memcpy(add(g, NN_DWR, 0x20)->data, line + 64, 64);
+    }
+    add_word(g, NN_RWR, 0x30, 0);
+    add_word(g, NN_MAC, 1, 0);
+    add(g, NN_CMD, 0x83);
+    for (unsigned i = 0; i < 16; i++) {
+        add(g, NN_DRD, i);
+    }
+    out = nn_read_on("ingenic-t41", g, 1024);
+    for (unsigned i = 0; i < 256; i++) {
+        unsigned px = i / 32, col = px % 4 * 32 + i % 32;
+        unsigned l = px / 4 * 4;
+        int a = 0, b = 0;
+
+        for (unsigned k = 0; k < 4; k++) {
+            a |= ram[l + k * D][col] << (2 * k);
+            b |= ram[l + 32 + k * D][col] << (2 * k);
+        }
+        g_assert_cmpint((int32_t)ldl_le_p(&out[4 * i]), ==, 3 * a + 9 * b);
+    }
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -774,5 +847,6 @@ int main(int argc, char **argv)
     qtest_add_func("ingenic/nna/engine/add", test_engine_add);
     qtest_add_func("ingenic/nna/engine/t40-1x1", test_engine_t40_1x1);
     qtest_add_func("ingenic/nna/engine/t40-3x3", test_engine_t40_3x3);
+    qtest_add_func("ingenic/nna/engine/f-slices", test_engine_f_slices);
     return g_test_run();
 }

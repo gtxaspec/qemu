@@ -37,6 +37,9 @@
  *   NNDWR 0x20/0x21 write F through ports 0 and 1 into 1024 lines of 128
  *     bytes: one slot of a port's WFCW program (T32 words: count, step) per
  *     row of 4 pixels, its line from FR_WADDR (0x50, +0x51 for port 1).
+ *     The RAM keeps 2-bit slices: slice k of a line's bytes goes 0x37 / 4
+ *     * k lines on, over what was there, and a read sums them back (a
+ *     T41NQ's, at plane strides 0x10, 0x20 and 0x40).
  *   NNMAC: 8 pixels (2 rows of 4 with 0x38 bit 4) x the taps of 0x3e (bit
  *     row * 3 + column a kernel position; their W groups follow in snake
  *     order: row 1 reversed) x 0x3c + 1 planes of 32 input
@@ -62,16 +65,16 @@
  *     (bits 7:5 = 7) makes the pointer the base. 0x32 does nothing.
  *   F: 0x57 sets the write line; NNDWR 0x20-0x2f write a line's first 64
  *     bytes, and with bit 3 its second, then step the line by the signed
- *     0x50 + (imm & 3). The RAM keeps 2-bit slices: slice k of a line's
- *     bytes goes 0x37 / 4 * k lines on, and a read sums them back.
+ *     0x50 + (imm & 3), into the same 2-bit slices.
  *   NNMAC: 4 pixels in a row, taps in raster order, the planes of 0x3d
  *     with bit 2 (else 0x3c); the tile moves a row (or 4 pixels across).
  *   NNDRD 0x00-0x07 (and 0x08-0x0f again) read the 128 sums. The CPU
  *     quantizes them; QSUM is not used.
  * Not modelled yet: on the T40, data other than 8 bits and what QSUM and
  * the register reads do; on both, 2- and 16-bit data, the output pixel
- * order (0x48, 0x49), WFCW's invert-MSB bit, what the registers read back
- * beyond what was written to them, the output a NNDRD reads before any
+ * order (0x48, 0x49), WFCW's invert-MSB bit, the lines a T41's port writes
+ * with no WFCW program (0x5a = 0), what the registers read back beyond
+ * what was written to them, the output a NNDRD reads before any
  * QSUM (the previous contents), and a second window a T41NQ also reads,
  * 120 pixels on, in a 4-bit 3x3 layout with two planes and a stride of 2
  * (where the sample's layers keep nothing).
@@ -234,6 +237,38 @@ static void nn_slots(IngenicNnaState *s)
     s->slots_dirty = false;
 }
 
+/*
+ * The F RAM keeps 2-bit slices: slice k of the byte at offset o goes to the
+ * line 0x37 / 4 * k further on, over whatever was there, and a read sums
+ * the slices back.
+ */
+static void nn_fset(IngenicNnaState *s, uint32_t o, uint8_t v)
+{
+    unsigned d = s->reg[0x37] / 4, line = o / NN_LINE % NN_LINES;
+
+    for (unsigned k = 0; k < 4; k++) {
+        s->fram[((line + k * d) % NN_LINES) * NN_LINE + o % NN_LINE] =
+            v >> (2 * k) & 3;
+    }
+}
+
+static uint8_t nn_fget(IngenicNnaState *s, int64_t o)
+{
+    unsigned d = s->reg[0x37] / 4, line, col;
+    uint8_t v = 0;
+
+    o %= INGENIC_NNA_FRAM;
+    if (o < 0) {
+        o += INGENIC_NNA_FRAM;
+    }
+    line = o / NN_LINE;
+    col = o % NN_LINE;
+    for (unsigned k = 0; k < 4; k++) {
+        v |= s->fram[((line + k * d) % NN_LINES) * NN_LINE + col] << (2 * k);
+    }
+    return v;
+}
+
 static void nn_fwrite(IngenicNnaState *s, unsigned p, const uint8_t *data)
 {
     unsigned slot = 4 * nn_vec(s);
@@ -241,7 +276,9 @@ static void nn_fwrite(IngenicNnaState *s, unsigned p, const uint8_t *data)
                  INGENIC_NNA_FRAM;
     unsigned n;
 
-    memcpy(&s->fram[o], data, 64);
+    for (unsigned i = 0; i < 64; i++) {
+        nn_fset(s, o + i, data[i]);
+    }
     if (++s->port_half[p] * 64 < slot) {
         return;
     }
@@ -262,36 +299,12 @@ static void nn_fwrite(IngenicNnaState *s, unsigned p, const uint8_t *data)
 /* the 32 input channels of pixel address px */
 static void nn_fpixel(IngenicNnaState *s, int64_t px, int f[32])
 {
-    unsigned nb = nn_vec(s), bits = nn_ifbit(s);
+    unsigned nb = nn_vec(s), bits = s->t40 ? 8 : nn_ifbit(s);
     int64_t o = (px >> 2) * NN_LINE + (px & 3) * nb;
     uint8_t b[64];
 
-    if (s->t40) {
-        int64_t line = px >> 2;
-        unsigned d = s->reg[0x37] / 4;
-
-        for (unsigned i = 0; i < 32; i++) {
-            f[i] = 0;
-        }
-        for (unsigned k = 0; k < 4; k++) {
-            int64_t l = (line + k * d) % NN_LINES;
-            const uint8_t *src;
-
-            src = &s->fram[(l < 0 ? l + NN_LINES : l) * NN_LINE +
-                           (px & 3) * nb];
-            for (unsigned i = 0; i < 32; i++) {
-                f[i] |= src[i] << (2 * k);
-            }
-        }
-        return;
-    }
-
-    o %= INGENIC_NNA_FRAM;
-    if (o < 0) {
-        o += INGENIC_NNA_FRAM;
-    }
-    for (unsigned i = 0; i < nb; i++) {
-        b[i] = s->fram[(o + i) % INGENIC_NNA_FRAM];
+    for (unsigned i = 0; i < (s->t40 ? 32 : nb); i++) {
+        b[i] = nn_fget(s, o + i);
     }
     for (unsigned i = 0; i < 32; i++) {
         f[i] = bits == 8 ? b[i] : b[i / 2] >> (4 * (i & 1)) & 0xf;
@@ -612,22 +625,15 @@ static void nn_rwr(IngenicNnaState *s, unsigned r, uint32_t v)
 
 /*
  * A T40's F write: the first 64 bytes of line fline, then with bit 3 the
- * second, after which fline steps by 0x50 + (imm & 3), signed. The F RAM
- * keeps 2-bit slices: slice k of each byte goes to the line 0x37 / 4 * k
- * further on, over whatever was there.
+ * second, after which fline steps by 0x50 + (imm & 3), signed.
  */
 static void nn_fwrite_t40(IngenicNnaState *s, unsigned imm,
                           const uint8_t *data)
 {
-    unsigned d = s->reg[0x37] / 4, half = imm & 8 ? 64 : 0;
+    uint32_t o = s->fline * NN_LINE + (imm & 8 ? 64 : 0);
 
-    for (unsigned k = 0; k < 4; k++) {
-        uint8_t *o = &s->fram[((s->fline + k * d) % NN_LINES) * NN_LINE +
-                              half];
-
-        for (unsigned i = 0; i < 64; i++) {
-            o[i] = data[i] >> (2 * k) & 3;
-        }
+    for (unsigned i = 0; i < 64; i++) {
+        nn_fset(s, o + i, data[i]);
     }
     if (imm & 8) {
         s->fline = (s->fline + sextract32(s->reg[0x50 + (imm & 3)], 0, 10)) %
