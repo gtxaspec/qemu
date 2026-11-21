@@ -20,6 +20,9 @@ if host_os == 'windows'
     'char-win.c',
   ))
 else
+  if host_os == 'emscripten'
+    chardev_ss.add(files('char-wasm.c'))
+  endif
   chardev_ss.add(files(
       'char-fd.c',
       'char-parallel.c',
