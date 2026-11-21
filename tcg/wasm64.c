@@ -27,7 +27,7 @@
 #include "wasm64.h"
 
 /* TBs executed more than this value will be compiled to wasm */
-#define INSTANTIATE_NUM 1500
+#define INSTANTIATE_NUM 6000
 
 #define EM_JS_PRE(ret, name, args, body...) EM_JS(ret, name, args, body)
 
