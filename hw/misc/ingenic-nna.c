@@ -31,8 +31,12 @@
  *   NNDWR 0x00/0x02/0x04/0x07 fill the four 64-byte quarters of a 256-byte
  *     W entry at WR_WADDR (0x5c), 0x07 then moves it on. A weight of wbit
  *     bits is wbit/2 slices of 2 bits, slice s in entry s of its group, an
- *     entry [32 oc][32 ic x 2 bits, LSB first]. msf_mode (0x46) sets its
- *     weight: 0 w, 1 2w, 2 w - 2^(wbit-1), 3 2w - (2^wbit-1) (the sample's).
+ *     entry [32 oc][32 ic x 2 bits, LSB first]. msf_mode (0x46) sets how
+ *     a slice s counts: 0 s, 1 2s + 1, 2 s - 2, 3 2s - 3; 0x28 which slices
+ *     take that offset: none (0 or 1), the top one (2), all (3). So the
+ *     weight is w, or 2w with bit 0 of msf_mode, plus the offsets: Venus's
+ *     YOLO layers run 2 with 0x28 at 2 (w - 2^(wbit-1)), Ingenic's sample 3
+ *     with 3 (2w - (2^wbit-1)); a T41NQ measures every pairing.
  *   NNDWR 0x40 fills BT at BTR_WADDR (0x5e): per 32 oc, B[32] then T[32].
  *   NNDWR 0x20/0x21 write F through ports 0 and 1 into 1024 lines of 128
  *     bytes: one slot of a port's WFCW program (T32 words: count, step) per
@@ -47,7 +51,8 @@
  *     the immediate moves the W read pointer past what it used; 0x30 sets
  *     that pointer and 0x34 steps it on from its last start.
  *   NNCMD bits 0-3: CPOC, CLROC, RDBT (BT at 0x42, which steps 4), QSUM:
- *     (sum << {1, 5, 10, 1}[0x43]) + B, divided by T's low 26 bits, plus
+ *     (sum << {1, 5, 10, 1}[0x43]) + B, in 32 bits that wrap, divided by
+ *     T's low 26 bits, plus
  *     half the range, clamped to obits (2 * 0x44 + 2). The shift counts
  *     the sum in half weights, as msf_mode 1 and 3 keep it: in modes 0 and
  *     2 it is one more, while NNDRD reads the sum as it is. Bits 7:5 move the
@@ -298,14 +303,24 @@ static void nn_fpixel(IngenicNnaState *s, int64_t px, int f[32])
     }
 }
 
+/* What msf_mode (0x46) adds to each 2-bit slice of a T41 weight 0x28 picks */
+static const int8_t nn_slice_off[4] = { 0, 1, -2, -3 };
+
 /*
- * Weff[oc][ic] of the tap group starting at W entry e, by msf_mode (0x46):
- * 0 w, 1 2w, 2 w - 2^(wbit-1), 3 2w - (2^wbit - 1)
+ * Weff[oc][ic] of the tap group starting at W entry e. A T41's: w, or 2w
+ * with bit 0 of msf_mode (0x46), plus msf_mode's slice offset times the
+ * place of each slice 0x28 picks (2: the top one, 3: all). A T40's, by
+ * msf_mode alone: 0 w, 1 2w, 2 w - 2^(wbit-1), 3 2w - (2^wbit - 1).
  */
 static void nn_wgroup(IngenicNnaState *s, uint32_t e, int w[32][32])
 {
     unsigned wbit = nn_wbit(s), sl = wbit / 2, msf = s->reg[0x46] & 3;
+    unsigned pick = s->reg[0x28] & 3;
     uint32_t cap = nn_wcap(s);
+    /* the places of the slices 0x28 picks: all of them sum to (2^wbit-1)/3 */
+    int places = pick == 3 ? ((1 << wbit) - 1) / 3 :
+                 pick == 2 ? 1 << (wbit - 2) : 0;
+    int off = nn_slice_off[msf] * places;
 
     for (unsigned oc = 0; oc < 32; oc++) {
         for (unsigned ic = 0; ic < 32; ic++) {
@@ -315,6 +330,10 @@ static void nn_wgroup(IngenicNnaState *s, uint32_t e, int w[32][32])
                 uint32_t o = ((e + k) % cap) * 256 + oc * 8 + ic / 4;
 
                 v |= (s->wram[o] >> (2 * (ic % 4)) & 3) << (2 * k);
+            }
+            if (!s->t40) {
+                w[oc][ic] = (msf & 1 ? 2 : 1) * v + off;
+                continue;
             }
             switch (msf) {
             case 0:
@@ -495,8 +514,13 @@ static void nn_qsum(IngenicNnaState *s)
     o = &s->out[s->out_len];
     memset(o, 0, len);
     for (unsigned i = 0; i < 256; i++) {
-        uint8_t q = nn_quant(s->ocb[i] * (1 << sh) + s->bt[i % 32],
-                             s->bt[32 + i % 32], obits);
+        int64_t r = s->ocb[i] * (1 << sh) + s->bt[i % 32];
+        uint8_t q;
+
+        if (!s->t40) {
+            r = (int32_t)(uint32_t)r;           /* a T41's wraps at 32 bits */
+        }
+        q = nn_quant(r, s->bt[32 + i % 32], obits);
 
         if (obits == 8) {
             o[i] = q;
