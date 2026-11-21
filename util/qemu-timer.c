@@ -326,7 +326,22 @@ int qemu_timeout_ns_to_ms(int64_t ns)
  */
 int qemu_poll_ns(GPollFD *fds, guint nfds, int64_t timeout)
 {
-#ifdef CONFIG_PPOLL
+#ifdef EMSCRIPTEN
+    /*
+     * poll() reaches the main thread through a proxied syscall that
+     * ASYNCIFY cannot suspend, and ppoll() is rejected outright. No fd is
+     * ever reported ready; sleeping briefly stops the main loop spinning
+     * on the BQL against the vCPU thread.
+     */
+    struct timespec ts = { 0, MIN(MAX(timeout, 0), SCALE_MS) };
+    guint i;
+
+    for (i = 0; i < nfds; i++) {
+        fds[i].revents = 0;
+    }
+    nanosleep(&ts, NULL);
+    return 0;
+#elif defined(CONFIG_PPOLL)
     if (timeout < 0) {
         return ppoll((struct pollfd *)fds, nfds, NULL, NULL);
     } else {
