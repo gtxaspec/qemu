@@ -31,6 +31,10 @@
 
 #include "qemu/osdep.h"
 #include <math.h>
+/*
+ * CONFIG_AVX2_OPT: an x86-64 host, so SSE2 is there for the kernels that use
+ * it without asking; AVX2 is looked for at run time
+ */
 #ifdef CONFIG_AVX2_OPT
 #include <immintrin.h>
 #include "host/cpuinfo.h"
@@ -1280,6 +1284,7 @@ static bool any16(const int16_t *v, int n)
 
 /* Transforms */
 
+#ifndef CONFIG_AVX2_OPT
 static void fdct4(const int *d, int *w)
 {
     int t[16];
@@ -1304,6 +1309,7 @@ static void fdct4(const int *d, int *w)
         w[12 + x] = d03 - 2 * d12;
     }
 }
+#endif
 
 static void idct4_1d(int *v, int s)
 {
@@ -1323,9 +1329,71 @@ static void copy_block(const uint8_t *p, int ps, uint8_t *dst, int ds, int n)
     }
 }
 
+#ifdef CONFIG_AVX2_OPT
+static inline void transpose4_epi32(__m128i *r)
+{
+    __m128i t0 = _mm_unpacklo_epi32(r[0], r[1]);
+    __m128i t1 = _mm_unpacklo_epi32(r[2], r[3]);
+    __m128i t2 = _mm_unpackhi_epi32(r[0], r[1]);
+    __m128i t3 = _mm_unpackhi_epi32(r[2], r[3]);
+
+    r[0] = _mm_unpacklo_epi64(t0, t1);
+    r[1] = _mm_unpackhi_epi64(t0, t1);
+    r[2] = _mm_unpacklo_epi64(t2, t3);
+    r[3] = _mm_unpackhi_epi64(t2, t3);
+}
+
+/* idct4_1d() on four vectors at once, v[k] holding element k of each */
+static inline void idct4_1d_x4(__m128i *v)
+{
+    __m128i e0 = _mm_add_epi32(v[0], v[2]), e1 = _mm_sub_epi32(v[0], v[2]);
+    __m128i e2 = _mm_sub_epi32(_mm_srai_epi32(v[1], 1), v[3]);
+    __m128i e3 = _mm_add_epi32(v[1], _mm_srai_epi32(v[3], 1));
+
+    v[0] = _mm_add_epi32(e0, e3);
+    v[1] = _mm_add_epi32(e1, e2);
+    v[2] = _mm_sub_epi32(e1, e2);
+    v[3] = _mm_sub_epi32(e0, e3);
+}
+
+/*
+ * idct4_add()'s numbers: the prediction is added in 32 bits, so the
+ * saturating packs clip as clip_pixel() does
+ */
+static void idct4_add_sse2(int *d, const uint8_t *p, int ps, uint8_t *dst,
+                           int ds)
+{
+    const __m128i zero = _mm_setzero_si128(), r32 = _mm_set1_epi32(32);
+    __m128i v[4];
+
+    for (int i = 0; i < 4; i++) {
+        v[i] = _mm_loadu_si128((const __m128i *)(d + 4 * i));
+    }
+    transpose4_epi32(v);        /* v[k]: column k of every row */
+    idct4_1d_x4(v);             /* the rows */
+    transpose4_epi32(v);        /* v[k]: row k */
+    idct4_1d_x4(v);             /* the columns */
+    for (int y = 0; y < 4; y++) {
+        __m128i pr = _mm_unpacklo_epi16(
+            _mm_unpacklo_epi8(_mm_cvtsi32_si128(ldl_he_p(p + y * ps)), zero),
+            zero);
+        __m128i r = _mm_add_epi32(pr, _mm_srai_epi32(_mm_add_epi32(v[y], r32),
+                                                     6));
+        __m128i b = _mm_packus_epi16(_mm_packs_epi32(r, r), zero);
+
+        stl_he_p(dst + y * ds, _mm_cvtsi128_si32(b));
+        _mm_storeu_si128((__m128i *)(d + 4 * y), v[y]);
+    }
+}
+#endif
+
 /* @d, rows then columns, added to the prediction into @dst */
 static void idct4_add(int *d, const uint8_t *p, int ps, uint8_t *dst, int ds)
 {
+#ifdef CONFIG_AVX2_OPT
+    idct4_add_sse2(d, p, ps, dst, ds);
+    return;
+#endif
     for (int y = 0; y < 4; y++) {
         idct4_1d(d + 4 * y, 1);
     }
@@ -1440,6 +1508,75 @@ static int dequant8(int c, uint32_t ls, int qp)
     return (c * (int)ls + (1 << (5 - qp / 6))) >> (6 - qp / 6);
 }
 
+#ifdef CONFIG_AVX2_OPT
+/* fdct4()'s two passes on four vectors, v[k] holding element k of each */
+static inline void fdct4_1d_x4(__m128i *v)
+{
+    __m128i s03 = _mm_add_epi32(v[0], v[3]), d03 = _mm_sub_epi32(v[0], v[3]);
+    __m128i s12 = _mm_add_epi32(v[1], v[2]), d12 = _mm_sub_epi32(v[1], v[2]);
+
+    v[0] = _mm_add_epi32(s03, s12);
+    v[1] = _mm_add_epi32(_mm_slli_epi32(d03, 1), d12);
+    v[2] = _mm_sub_epi32(s03, s12);
+    v[3] = _mm_sub_epi32(d03, _mm_slli_epi32(d12, 1));
+}
+
+/*
+ * qlevel() on four coefficients: (|w| * mf + dz) >> qb in 64 bits, as the C
+ * form computes it, then the sign of w
+ */
+static inline __m128i qlevel_x4(__m128i w, __m128i mf, __m128i dz64,
+                                __m128i qb)
+{
+    __m128i sign = _mm_srai_epi32(w, 31);
+    __m128i a = _mm_sub_epi32(_mm_xor_si128(w, sign), sign);
+    __m128i ev = _mm_srl_epi64(_mm_add_epi64(_mm_mul_epu32(a, mf), dz64), qb);
+    __m128i ao = _mm_srli_epi64(a, 32), mo = _mm_srli_epi64(mf, 32);
+    __m128i od = _mm_srl_epi64(_mm_add_epi64(_mm_mul_epu32(ao, mo), dz64), qb);
+    __m128i l = _mm_or_si128(_mm_and_si128(ev, _mm_set_epi32(0, -1, 0, -1)),
+                             _mm_slli_epi64(od, 32));
+
+    return _mm_sub_epi32(_mm_xor_si128(l, sign), sign);
+}
+
+/* qlevel() of the 16 coefficients of @w (raster) with @mf, into @l */
+static inline void quant16_sse2(const int *w, const uint32_t *mf, int qb,
+                                uint32_t dz, int *l)
+{
+    __m128i dz64 = _mm_set_epi32(0, dz, 0, dz), qbv = _mm_cvtsi32_si128(qb);
+
+    for (int y = 0; y < 4; y++) {
+        __m128i q = qlevel_x4(_mm_loadu_si128((const __m128i *)(w + 4 * y)),
+                              _mm_loadu_si128((const __m128i *)(mf + 4 * y)),
+                              dz64, qbv);
+
+        _mm_storeu_si128((__m128i *)(l + 4 * y), q);
+    }
+}
+
+/* fdct4() of the 4x4 difference @s - @p: v[k] is row k of the result */
+static inline void fdct4_diff_sse2(const uint8_t *s, int ss, const uint8_t *p,
+                                   int ps, __m128i *v)
+{
+    const __m128i zero = _mm_setzero_si128();
+
+    for (int y = 0; y < 4; y++) {
+        __m128i a = _mm_unpacklo_epi8(_mm_cvtsi32_si128(ldl_he_p(s + y * ss)),
+                                      zero);
+        __m128i b = _mm_unpacklo_epi8(_mm_cvtsi32_si128(ldl_he_p(p + y * ps)),
+                                      zero);
+        __m128i df = _mm_sub_epi16(a, b);
+
+        /* the four 16-bit differences, sign-extended to 32 */
+        v[y] = _mm_srai_epi32(_mm_unpacklo_epi16(df, df), 16);
+    }
+    transpose4_epi32(v);        /* v[k]: column k of every row */
+    fdct4_1d_x4(v);             /* the rows */
+    transpose4_epi32(v);        /* v[k]: row k */
+    fdct4_1d_x4(v);             /* the columns */
+}
+#endif
+
 /*
  * A 4x4 block against its prediction: levels in scan order, its
  * reconstruction into @dst. Returns whether a level is not 0.
@@ -1453,6 +1590,26 @@ static bool code4(const H264Enc *e, const uint8_t *s, int ss, const uint8_t *p,
     uint32_t dz = (1u << qb) / (inter ? 6 : 3);
     bool nz = false;
 
+#ifdef CONFIG_AVX2_OPT
+    {
+        const __m128i zero = _mm_setzero_si128();
+        const uint32_t *mf = e->q.q4[inter][qp % 6];
+        __m128i v[4], any = zero;
+        __m128i dz64 = _mm_set_epi32(0, dz, 0, dz);
+        __m128i qbv = _mm_cvtsi32_si128(qb);
+
+        fdct4_diff_sse2(s, ss, p, ps, v);
+        for (int y = 0; y < 4; y++) {
+            __m128i m = _mm_loadu_si128((const __m128i *)(mf + 4 * y));
+            __m128i q = qlevel_x4(v[y], m, dz64, qbv);
+
+            any = _mm_or_si128(any, q);
+            _mm_storeu_si128((__m128i *)(w + 4 * y), v[y]);
+            _mm_storeu_si128((__m128i *)(l + 4 * y), q);
+        }
+        nz = _mm_movemask_epi8(_mm_cmpeq_epi32(any, zero)) != 0xffff;
+    }
+#else
     for (int y = 0; y < 4; y++) {
         for (int x = 0; x < 4; x++) {
             d[4 * y + x] = s[y * ss + x] - p[y * ps + x];
@@ -1463,6 +1620,7 @@ static bool code4(const H264Enc *e, const uint8_t *s, int ss, const uint8_t *p,
         l[i] = qlevel(w[i], e->q.q4[inter][qp % 6][i], qb, dz);
         nz |= l[i] != 0;
     }
+#endif
     for (int k = 0; k < 16; k++) {
         lv[k] = l[zz4[k]];
     }
@@ -1529,6 +1687,31 @@ static uint64_t ssd(const uint8_t *s, int ss, const uint8_t *r, int rs, int n)
 {
     uint64_t sum = 0;
 
+#ifdef CONFIG_AVX2_OPT
+    if (n == 8 || n == 16) {
+        /* a block's squares sum to at most 256 * 255 * 255, within 32 bits */
+        const __m128i zero = _mm_setzero_si128();
+        __m128i acc = zero;
+
+        for (int y = 0; y < n; y++, s += ss, r += rs) {
+            __m128i a = n == 16 ? _mm_loadu_si128((const __m128i *)s)
+                                : _mm_loadl_epi64((const __m128i *)s);
+            __m128i b = n == 16 ? _mm_loadu_si128((const __m128i *)r)
+                                : _mm_loadl_epi64((const __m128i *)r);
+            __m128i lo = _mm_sub_epi16(_mm_unpacklo_epi8(a, zero),
+                                       _mm_unpacklo_epi8(b, zero));
+            __m128i hi = _mm_sub_epi16(_mm_unpackhi_epi8(a, zero),
+                                       _mm_unpackhi_epi8(b, zero));
+
+            acc = _mm_add_epi32(acc, _mm_madd_epi16(lo, lo));
+            acc = _mm_add_epi32(acc, _mm_madd_epi16(hi, hi));
+        }
+        acc = _mm_add_epi32(acc, _mm_shuffle_epi32(acc, 0x4e));
+        acc = _mm_add_epi32(acc, _mm_shuffle_epi32(acc, 0xb1));
+        return (uint32_t)_mm_cvtsi128_si32(acc);
+    }
+#endif
+
     for (int y = 0; y < n; y++, s += ss, r += rs) {
         uint32_t row = 0;
 
@@ -1542,7 +1725,8 @@ static uint64_t ssd(const uint8_t *s, int ss, const uint8_t *r, int rs, int n)
     return sum;
 }
 
-static int satd4(const uint8_t *s, int ss, const uint8_t *p, int ps)
+#ifndef CONFIG_AVX2_OPT
+static int satd4_c(const uint8_t *s, int ss, const uint8_t *p, int ps)
 {
     int t[16], sum = 0;
 
@@ -1563,6 +1747,74 @@ static int satd4(const uint8_t *s, int ss, const uint8_t *p, int ps)
         sum += abs(a + c) + abs(a - c) + abs(b - d) + abs(b + d);
     }
     return sum;
+}
+#endif
+
+#ifdef CONFIG_AVX2_OPT
+/*
+ * The same sum: the absolute values of the 4x4 Hadamard transform of the
+ * difference do not depend on the order its rows and columns are taken in,
+ * nor on their signs. Differences of 8-bit samples keep every stage within
+ * 16 bits (at most 16 * 255).
+ */
+static int satd4_sse2(const uint8_t *s, int ss, const uint8_t *p, int ps)
+{
+    const __m128i zero = _mm_setzero_si128();
+    __m128i sv, pv, d01, d23, sum, dif, va, vb, w[2], acc;
+
+    sv = _mm_unpacklo_epi64(
+        _mm_unpacklo_epi32(_mm_cvtsi32_si128(ldl_he_p(s)),
+                           _mm_cvtsi32_si128(ldl_he_p(s + ss))),
+        _mm_unpacklo_epi32(_mm_cvtsi32_si128(ldl_he_p(s + 2 * ss)),
+                           _mm_cvtsi32_si128(ldl_he_p(s + 3 * ss))));
+    pv = _mm_unpacklo_epi64(
+        _mm_unpacklo_epi32(_mm_cvtsi32_si128(ldl_he_p(p)),
+                           _mm_cvtsi32_si128(ldl_he_p(p + ps))),
+        _mm_unpacklo_epi32(_mm_cvtsi32_si128(ldl_he_p(p + 2 * ps)),
+                           _mm_cvtsi32_si128(ldl_he_p(p + 3 * ps))));
+    /* rows 0 and 1, rows 2 and 3, as 16-bit differences */
+    d01 = _mm_sub_epi16(_mm_unpacklo_epi8(sv, zero),
+                        _mm_unpacklo_epi8(pv, zero));
+    d23 = _mm_sub_epi16(_mm_unpackhi_epi8(sv, zero),
+                        _mm_unpackhi_epi8(pv, zero));
+    /* down the columns: r0 +- r2 and r1 +- r3, then sums and differences */
+    sum = _mm_add_epi16(d01, d23);
+    dif = _mm_sub_epi16(d01, d23);
+    va = _mm_unpacklo_epi64(sum, dif);
+    vb = _mm_unpackhi_epi64(sum, dif);
+    w[0] = _mm_add_epi16(va, vb);
+    w[1] = _mm_sub_epi16(va, vb);
+    acc = zero;
+    for (int i = 0; i < 2; i++) {
+        /* along each row of 4: lanes 2 apart, then neighbours */
+        const __m128i lo2 = _mm_set_epi16(0, 0, -1, -1, 0, 0, -1, -1);
+        const __m128i even = _mm_set_epi16(0, -1, 0, -1, 0, -1, 0, -1);
+        __m128i x = w[i], y, a, b, c, z, e, f, r;
+
+        y = _mm_shufflehi_epi16(_mm_shufflelo_epi16(x, 0x4e), 0x4e);
+        a = _mm_add_epi16(x, y);
+        b = _mm_sub_epi16(x, y);
+        c = _mm_or_si128(_mm_and_si128(lo2, a), _mm_andnot_si128(lo2, b));
+        z = _mm_shufflehi_epi16(_mm_shufflelo_epi16(c, 0xb1), 0xb1);
+        e = _mm_add_epi16(c, z);
+        f = _mm_sub_epi16(c, z);
+        r = _mm_or_si128(_mm_and_si128(even, e), _mm_andnot_si128(even, f));
+        r = _mm_max_epi16(r, _mm_sub_epi16(zero, r));
+        acc = _mm_add_epi32(acc, _mm_madd_epi16(r, _mm_set1_epi16(1)));
+    }
+    acc = _mm_add_epi32(acc, _mm_shuffle_epi32(acc, 0x4e));
+    acc = _mm_add_epi32(acc, _mm_shuffle_epi32(acc, 0xb1));
+    return _mm_cvtsi128_si32(acc);
+}
+#endif
+
+static int satd4(const uint8_t *s, int ss, const uint8_t *p, int ps)
+{
+#ifdef CONFIG_AVX2_OPT
+    return satd4_sse2(s, ss, p, ps);
+#else
+    return satd4_c(s, ss, p, ps);
+#endif
 }
 
 static int satd(const uint8_t *s, int ss, const uint8_t *p, int ps, int n)
@@ -1925,19 +2177,57 @@ static bool pred_mb(const H264Refs *r, int n, int mode, uint8_t *out)
         a = 16 * (REF(r, -1, n - 1) + REF(r, n - 1, -1));
         b = ((n == 16 ? 5 : 34) * hs + 32) >> 6;
         c = ((n == 16 ? 5 : 34) * vs + 32) >> 6;
+#ifdef CONFIG_AVX2_OPT
+        {
+            /* clip_pixel() of each: a saturating pack, then to 0-255 */
+            __m128i bx[4];
+
+            for (int q = 0; q < n / 4; q++) {
+                int x = 4 * q - k + 1;
+
+                bx[q] = _mm_set_epi32(b * (x + 3), b * (x + 2), b * (x + 1),
+                                      b * x);
+            }
+            for (int y = 0; y < n; y++) {
+                __m128i base = _mm_set1_epi32(a + c * (y - k + 1) + 16);
+                __m128i r0 = _mm_srai_epi32(_mm_add_epi32(base, bx[0]), 5);
+                __m128i r1 = _mm_srai_epi32(_mm_add_epi32(base, bx[1]), 5);
+                __m128i w01 = _mm_packs_epi32(r0, r1), px;
+
+                if (n == 16) {
+                    __m128i r2 = _mm_srai_epi32(_mm_add_epi32(base, bx[2]), 5);
+                    __m128i r3 = _mm_srai_epi32(_mm_add_epi32(base, bx[3]), 5);
+
+                    px = _mm_packus_epi16(w01, _mm_packs_epi32(r2, r3));
+                    _mm_storeu_si128((__m128i *)(out + y * 16), px);
+                } else {
+                    px = _mm_packus_epi16(w01, w01);
+                    _mm_storel_epi64((__m128i *)(out + y * 8), px);
+                }
+            }
+        }
+#else
         for (int y = 0; y < n; y++) {
             for (int x = 0; x < n; x++) {
                 out[y * n + x] = clip_pixel((a + b * (x - k + 1) +
                                              c * (y - k + 1) + 16) >> 5);
             }
         }
+#endif
         return true;
     }
-    if (mode == vert || mode == hor) {
+    if (mode == vert) {
+        for (int x = 0; x < n; x++) {
+            out[x] = r->top[x];
+        }
+        for (int y = 1; y < n; y++) {
+            memcpy(out + y * n, out, n);
+        }
+        return true;
+    }
+    if (mode == hor) {
         for (int y = 0; y < n; y++) {
-            for (int x = 0; x < n; x++) {
-                out[y * n + x] = mode == vert ? r->top[x] : r->left[y];
-            }
+            memset(out + y * n, r->left[y], n);
         }
         return true;
     }
@@ -2148,11 +2438,22 @@ static void cand_i16(H264Enc *e, int mbx, int mby, int qp, H264Cand *k)
         if (flat_sad >= 0) {
             sad = flat_sad;
         } else {
+#ifdef CONFIG_AVX2_OPT
+            __m128i acc = _mm_setzero_si128();
+
+            for (int y = 0; y < 16; y++, sr += e->w, pr += 16) {
+                acc = _mm_add_epi64(acc, _mm_sad_epu8(
+                    _mm_loadu_si128((const __m128i *)sr),
+                    _mm_loadu_si128((const __m128i *)pr)));
+            }
+            sad = _mm_cvtsi128_si32(acc) + _mm_extract_epi16(acc, 4);
+#else
             for (int y = 0; y < 16; y++, sr += e->w, pr += 16) {
                 for (int x = 0; x < 16; x++) {
                     sad += abs(sr[x] - pr[x]);
                 }
             }
+#endif
             if (flat >= 0) {
                 flat_sad = sad;
             }
@@ -2165,7 +2466,16 @@ static void cand_i16(H264Enc *e, int mbx, int mby, int qp, H264Cand *k)
     }
     /* by 4x4 block, raster */
     for (int b = 0; b < 16; b++) {
-        int bx = (b & 3) * 4, by = (b >> 2) * 4, d[16];
+        int bx = (b & 3) * 4, by = (b >> 2) * 4;
+#ifdef CONFIG_AVX2_OPT
+        __m128i v[4];
+
+        fdct4_diff_sse2(s + by * e->w + bx, e->w, bp + by * 16 + bx, 16, v);
+        for (int y = 0; y < 4; y++) {
+            _mm_storeu_si128((__m128i *)(w[b] + 4 * y), v[y]);
+        }
+#else
+        int d[16];
 
         for (int y = 0; y < 4; y++) {
             for (int x = 0; x < 4; x++) {
@@ -2174,6 +2484,7 @@ static void cand_i16(H264Enc *e, int mbx, int mby, int qp, H264Cand *k)
             }
         }
         fdct4(d, w[b]);
+#endif
         dc[b] = w[b][0];
     }
     hadamard4(dc, t);
@@ -2187,10 +2498,20 @@ static void cand_i16(H264Enc *e, int mbx, int mby, int qp, H264Cand *k)
     for (int b = 0; b < 16; b++) {
         int pos = blk_y[b] + blk_x[b] / 4;
 
+#ifdef CONFIG_AVX2_OPT
+        int l[16];
+
+        quant16_sse2(w[pos], e->q.q4[0][qp % 6], qb - 1, (1u << (qb - 1)) / 3,
+                     l);
+        for (int i = 1; i < 16; i++) {
+            k->lv[b][i] = l[zz4[i]];
+        }
+#else
         for (int i = 1; i < 16; i++) {
             k->lv[b][i] = qlevel(w[pos][zz4[i]], e->q.q4[0][qp % 6][zz4[i]],
                                  qb - 1, (1u << (qb - 1)) / 3);
         }
+#endif
         any |= any16(k->lv[b] + 1, 15);
     }
     /* the EL150 codes the AC blocks whenever there is any luma level */
@@ -2260,11 +2581,40 @@ static bool inter_zero(const H264Enc *e, int mbx, int mby, int qp)
     for (int by = 0; by < 4; by++) {
         uint32_t col[16] = { 0 };
 
+#ifdef CONFIG_AVX2_OPT
+        {
+            /* the four 4x4 sums of the band, in col[0], [4], [8] and [12] */
+            const __m128i zero = _mm_setzero_si128(), one = _mm_set1_epi16(1);
+            __m128i lo = zero, hi = zero, q;
+
+            for (int y = 0; y < 4; y++, s += e->w, r += e->w) {
+                __m128i a = _mm_loadu_si128((const __m128i *)s);
+                __m128i b = _mm_loadu_si128((const __m128i *)r);
+                __m128i d = _mm_or_si128(_mm_subs_epu8(a, b),
+                                         _mm_subs_epu8(b, a));
+
+                lo = _mm_add_epi16(lo, _mm_unpacklo_epi8(d, zero));
+                hi = _mm_add_epi16(hi, _mm_unpackhi_epi8(d, zero));
+            }
+            lo = _mm_madd_epi16(lo, one);   /* columns in pairs */
+            hi = _mm_madd_epi16(hi, one);
+            q = _mm_add_epi32(_mm_unpacklo_epi64(
+                                  _mm_shuffle_epi32(lo, 0x88),
+                                  _mm_shuffle_epi32(hi, 0x88)),
+                              _mm_unpacklo_epi64(
+                                  _mm_shuffle_epi32(lo, 0xdd),
+                                  _mm_shuffle_epi32(hi, 0xdd)));
+            for (int bx = 0; bx < 4; bx++) {
+                col[4 * bx] = _mm_cvtsi128_si32(_mm_srli_si128(q, 4 * bx));
+            }
+        }
+#else
         for (int y = 0; y < 4; y++, s += e->w, r += e->w) {
             for (int x = 0; x < 16; x++) {
                 col[x] += abs(s[x] - r[x]);
             }
         }
+#endif
         for (int bx = 0; bx < 16; bx += 4) {
             uint64_t sad = col[bx] + col[bx + 1] + col[bx + 2] + col[bx + 3];
 
@@ -2317,7 +2667,17 @@ static void code_chroma(const H264Enc *e, int mbx, int mby, int qp, int inter,
         uint32_t dz = (1u << qb) / (inter ? 6 : 3);
 
         for (int b = 0; b < 4; b++) {
-            int bx = (b & 1) * 4, by = (b >> 1) * 4, d[16];
+            int bx = (b & 1) * 4, by = (b >> 1) * 4;
+#ifdef CONFIG_AVX2_OPT
+            __m128i v[4];
+
+            fdct4_diff_sse2(s + by * cw + bx, cw, pred[pl] + by * 8 + bx, 8,
+                            v);
+            for (int y = 0; y < 4; y++) {
+                _mm_storeu_si128((__m128i *)(w[b] + 4 * y), v[y]);
+            }
+#else
+            int d[16];
 
             for (int y = 0; y < 4; y++) {
                 for (int x = 0; x < 4; x++) {
@@ -2326,6 +2686,7 @@ static void code_chroma(const H264Enc *e, int mbx, int mby, int qp, int inter,
                 }
             }
             fdct4(d, w[b]);
+#endif
             dc[b] = w[b][0];
         }
         hadamard2(dc, t);
@@ -2335,11 +2696,21 @@ static void code_chroma(const H264Enc *e, int mbx, int mby, int qp, int inter,
         }
         for (int b = 0; b < 4; b++) {
             ch->ac[pl][b][0] = 0;
+#ifdef CONFIG_AVX2_OPT
+            int l[16];
+
+            quant16_sse2(w[b], e->q.q4[inter][m], qb - 1,
+                         (1u << (qb - 1)) / (inter ? 6 : 3), l);
+            for (int i = 1; i < 16; i++) {
+                ch->ac[pl][b][i] = l[zz4[i]];
+            }
+#else
             for (int i = 1; i < 16; i++) {
                 ch->ac[pl][b][i] = qlevel(w[b][zz4[i]],
                                           e->q.q4[inter][m][zz4[i]], qb - 1,
                                           (1u << (qb - 1)) / (inter ? 6 : 3));
             }
+#endif
             ac_any |= any16(ch->ac[pl][b] + 1, 15);
         }
     }
@@ -3530,6 +3901,27 @@ static uint32_t block_rate(const int16_t *lv, int n, bool cbf)
     uint32_t r = cbf ? 64 : 0;
     int last = -1;
 
+#ifdef CONFIG_AVX2_OPT
+    /* the sum and the last index do not depend on the order levels come in */
+    for (int i = 0; i < n; i += 8) {
+        __m128i v = _mm_loadu_si128((const __m128i *)(lv + i));
+        uint32_t m = ~_mm_movemask_epi8(_mm_cmpeq_epi16(v, _mm_setzero_si128()))
+                     & 0xffff;
+
+        if (n - i < 8) {
+            m &= (1u << (2 * (n - i))) - 1;
+        }
+        while (m) {
+            int bit = ctz32(m) & ~1;        /* two mask bits a level */
+            int j = i + bit / 2;
+
+            last = j;
+            r += level_rate(abs(lv[j]));
+            m &= ~(3u << bit);
+        }
+    }
+    return last < 0 ? r : r + 64 * last;
+#endif
     for (int i = 0; i < n; i++) {
         if (lv[i]) {
             last = i;
@@ -4147,13 +4539,21 @@ static int memo_key(const H264Enc *e, int kind, int mbx, int mby, int qp,
     *k++ = qp;
     *k++ = kind == MEMO_I48 || kind == MEMO_CHROMA ? lam : 0;
     if (kind == MEMO_INTER) {
-        for (int pl = 0; pl < 3; pl++) {
-            int n = pl ? 8 : 16, st = pl ? cw : w;
-            int off = mby * n * st + mbx * n;
+        /* each row of the source, then of the reference, at sizes known here */
+        const uint8_t *s0 = e->src[0] + mby * 16 * w + mbx * 16;
+        const uint8_t *r0 = e->chan->ref[0] + mby * 16 * w + mbx * 16;
 
-            for (int y = 0; y < n; y++, k += 2 * n) {
-                memcpy(k, e->src[pl] + off + y * st, n);
-                memcpy(k + n, e->chan->ref[pl] + off + y * st, n);
+        for (int y = 0; y < 16; y++, k += 32) {
+            memcpy(k, s0 + y * w, 16);
+            memcpy(k + 16, r0 + y * w, 16);
+        }
+        for (int pl = 1; pl < 3; pl++) {
+            const uint8_t *sc = e->src[pl] + mby * 8 * cw + mbx * 8;
+            const uint8_t *rc = e->chan->ref[pl] + mby * 8 * cw + mbx * 8;
+
+            for (int y = 0; y < 8; y++, k += 16) {
+                memcpy(k, sc + y * cw, 8);
+                memcpy(k + 8, rc + y * cw, 8);
             }
         }
         return k - key;
@@ -5107,6 +5507,21 @@ static void h264_source(H264Enc *e, const uint8_t *y, const uint8_t *uv,
         const uint8_t *s = uv + MIN(r, h / 2 - 1) * stride;
         uint8_t *cb = e->src[1] + r * cw, *cr = e->src[2] + r * cw;
         int x = 0;
+
+#ifdef CONFIG_AVX2_OPT
+        for (; x + 16 <= w / 2; x += 16) {
+            const __m128i lo8 = _mm_set1_epi16(0xff);
+            __m128i a = _mm_loadu_si128((const __m128i *)(s + 2 * x));
+            __m128i b = _mm_loadu_si128((const __m128i *)(s + 2 * x + 16));
+
+            _mm_storeu_si128((__m128i *)(cb + x),
+                             _mm_packus_epi16(_mm_and_si128(a, lo8),
+                                              _mm_and_si128(b, lo8)));
+            _mm_storeu_si128((__m128i *)(cr + x),
+                             _mm_packus_epi16(_mm_srli_epi16(a, 8),
+                                              _mm_srli_epi16(b, 8)));
+        }
+#endif
 
         for (; x + 8 <= w / 2; x += 8) {
             for (int i = 0; i < 8; i++) {
