@@ -207,7 +207,7 @@ qtests_mipsel = qtests_mips + \
     'ingenic-isp-shadow-test', 'ingenic-isp-gate-test', 'ingenic-isp-irq-test',
     'ingenic-isp-vic-test', 'ingenic-isp-drop-test', 'ingenic-isp-mask-test',
     'ingenic-isp-lines-test', 'ingenic-isp-zoom-test', 'ingenic-isp-msca-test',
-    'ingenic-ivdc-pace-test', 'ingenic-ivdc-match-test',
+    'ingenic-ivdc-pace-test', 'ingenic-ivdc-match-test', 'ingenic-ivdc-dual-test',
     'ingenic-isp-turns-test', 'ingenic-isp-mdns-test', 'ingenic-t20-temper-test',
     'ingenic-t20-raw-test', 'ingenic-sensor-noise-test',
     'ingenic-sensor-exposure-test', 'ingenic-sensor-fault-test', 'ingenic-sensor-reset-test',
