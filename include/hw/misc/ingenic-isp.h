@@ -235,6 +235,8 @@ struct IngenicIspState {
     bool ivdc_coding;                   /* an encoder codes an IVDC frame */
     bool ivdc_waiting;                  /* the IVDC's waits for one */
     int64_t ivdc_held;                  /* VIC 0 waits on it since */
+    bool ch0_ivdc;                      /* channel 0's last frame: IVDC */
+    int64_t ivdc_unserved;              /* its driver's interrupt, since */
     bool osd_stalled;                   /* logged */
     bool isp_level;                     /* the interrupts as last traced */
     uint32_t vic_level;

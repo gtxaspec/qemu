@@ -94,6 +94,12 @@
  *   complete frame channel 0 on the core's frame start (the T41's at
  *   0x40028 bit 20), and the T41's never drains channel 0's done FIFO
  *   then: its IVDC frames leave none.
+ *   The T32's and T33's leave one, which the driver's frame interrupt reads
+ *   and clears; a frame that started meanwhile had its own cleared unread
+ *   and stopped the channel, so VIC 0 holds the next frame until it is
+ *   read, four frame times at most. One frame goes to both encoders of
+ *   the group, the H.264 on VPU0 and the JPEG engine on VPU1, whichever
+ *   starts while it is live (see ingenic-ivdc.c).
  *
  * - The T23's, T32's, T33's, T40's and T41's MSCA draws libimp's ISP OSD
  *   into what a channel puts out, after scaling and crop: four opaque YUV
@@ -1700,6 +1706,7 @@ struct IngenicIspLayout {
     bool done_uv_head;              /* the UV done shows the head entry, */
                                     /* or what the Y read just popped */
     bool ivdc_no_done;              /* an IVDC frame leaves no done entry */
+    bool ivdc_serve;                /* its interrupt is served first */
     bool done_unread;               /* the oldest done entry gives way */
     unsigned msca_poly;             /* the MSCA filters a channel of */
                                     /* another size, ISP_POLY_*: see */
@@ -2085,6 +2092,7 @@ static const IngenicIspLayout ingenic_t32_isp_layout = {
     .dma = { 0x300b0, 0x300b8, 0x300b4, 0, 0, false },
     .masks = ingenic_t32_isp_masks,
     .nmasks = ARRAY_SIZE(ingenic_t32_isp_masks),
+    .ivdc_serve = true,
 };
 
 /* The T32's, with register lists the core loads itself */
@@ -2131,6 +2139,7 @@ static const IngenicIspLayout ingenic_t33_isp_layout = {
     .dma = { 0x300b0, 0x300b8, 0x300b4, 0, 0, false },
     .masks = ingenic_t32_isp_masks,
     .nmasks = ARRAY_SIZE(ingenic_t32_isp_masks),
+    .ivdc_serve = true,
 };
 
 /* The T33's, its register lists' block and OSD pictures moved */
@@ -7031,6 +7040,9 @@ static bool isp_chan_frame(IngenicIspState *s, ImageSensorState *sensor,
         R(base + r->y_push) = y | 1;
         R(base + r->uv_push) = uv | 1;
     }
+    if (!p && !n) {
+        s->ch0_ivdc = y & ISP_IVDC_ADDR;
+    }
     if (y & ISP_IVDC_ADDR) {
         trace_ingenic_isp_ivdc(p, n, frame, extract32(y, 25, 2),
                                sensor->input);
@@ -9687,6 +9699,26 @@ static ImageSensorState *isp_vic_sensor(IngenicIspState *s, unsigned n)
  */
 #define SWITCH_HOLD         10
 
+/*
+ * Whether the driver's interrupt for the last IVDC frame is still being
+ * served: the ISP's line is up, or a channel's done entry is unread
+ */
+static bool isp_ivdc_unserved(IngenicIspState *s)
+{
+    IngenicIspChan *c0 = &s->chan[0][0];
+
+    if (!isp_layout(s)->ivdc_serve ||
+        !(s->ch0_ivdc || (c0->y_n && (c0->y[c0->y_rd] & ISP_IVDC_ADDR)))) {
+        return false;
+    }
+    for (unsigned n = 0; n < INGENIC_ISP_CHANS; n++) {
+        if (s->chan[0][n].done_n) {
+            return true;
+        }
+    }
+    return s->isp_level;
+}
+
 static const char *isp_frame_held(IngenicIspState *s, IngenicIspVic *v,
                                   int64_t period)
 {
@@ -9707,6 +9739,16 @@ static const char *isp_frame_held(IngenicIspState *s, IngenicIspVic *v,
                                   : "the last IVDC frame not taken";
         }
         s->ivdc_held = 0;
+        if (isp_ivdc_unserved(s)) {
+            if (!s->ivdc_unserved) {
+                s->ivdc_unserved = now;
+            }
+            if (now < s->ivdc_unserved + 4 * period) {
+                return "the last IVDC frame's interrupt unserved";
+            }
+        } else {
+            s->ivdc_unserved = 0;
+        }
     }
     if (!s->switched || v->n) {
         return NULL;
@@ -12521,6 +12563,8 @@ static void ingenic_isp_reset_hold(Object *obj, ResetType type)
     s->vic_closed = 0;
     memset(s->in_frame, 0, sizeof(s->in_frame));
     s->ivdc_held = 0;
+    s->ivdc_unserved = 0;
+    s->ch0_ivdc = false;
     s->chans_set = 0;
     s->shadow_value = 0;
     s->shadow_pending = false;
