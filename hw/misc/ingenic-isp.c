@@ -97,9 +97,12 @@
  *   The T32's and T33's leave one, which the driver's frame interrupt reads
  *   and clears; a frame that started meanwhile had its own cleared unread
  *   and stopped the channel, so VIC 0 holds the next frame until it is
- *   read, four frame times at most. One frame goes to both encoders of
- *   the group, the H.264 on VPU0 and the JPEG engine on VPU1, whichever
- *   starts while it is live (see ingenic-ivdc.c).
+ *   read, four frame times at most. A T32's channel 0 scaled from the
+ *   sensor's frame sends no IVDC frame (a 1080p main of a 1440p sensor
+ *   under direct_mode=1 produced none on a T32LQ), and the buffers stay
+ *   queued. One frame goes to both encoders of the group, the H.264 on VPU0
+ *   and the JPEG engine on VPU1, whichever starts while it is live (see
+ *   ingenic-ivdc.c); both as the raptor team's T32LQ runs showed.
  *
  * - The T23's, T32's, T33's, T40's and T41's MSCA draws libimp's ISP OSD
  *   into what a channel puts out, after scaling and crop: four opaque YUV
@@ -1707,6 +1710,7 @@ struct IngenicIspLayout {
                                     /* or what the Y read just popped */
     bool ivdc_no_done;              /* an IVDC frame leaves no done entry */
     bool ivdc_serve;                /* its interrupt is served first */
+    bool ivdc_no_scale;             /* a scaled channel 0 sends no IVDC frame */
     bool done_unread;               /* the oldest done entry gives way */
     unsigned msca_poly;             /* the MSCA filters a channel of */
                                     /* another size, ISP_POLY_*: see */
@@ -2093,6 +2097,7 @@ static const IngenicIspLayout ingenic_t32_isp_layout = {
     .masks = ingenic_t32_isp_masks,
     .nmasks = ARRAY_SIZE(ingenic_t32_isp_masks),
     .ivdc_serve = true,
+    .ivdc_no_scale = true,
 };
 
 /* The T32's, with register lists the core loads itself */
@@ -7025,6 +7030,21 @@ static bool isp_chan_frame(IngenicIspState *s, ImageSensorState *sensor,
             isp_raise(s, l->pipe[p].done_sta ?: l->pipe[p].int_sta, BIT(n));
         }
         return false;
+    }
+    /*
+     * A T32LQ's main scaled from its sensor's frame, 1080p from 1440p, put
+     * out no frame under direct_mode=1: the buffers stay queued and the
+     * encoder waits for a frame that never starts
+     */
+    if (l->ivdc_no_scale && !p && !n && (ch->y[ch->y_rd] & ISP_IVDC_ADDR)) {
+        uint32_t fw, fh;
+
+        isp_frame_size(s, &fw, &fh);
+        if (fw && fh && (w != fw || h != fh)) {
+            trace_ingenic_isp_chan_drop(p, n, frame, "scaled over IVDC");
+            s->ch0_from = 0;
+            return false;
+        }
     }
     y = isp_pop(ch->y, &ch->y_rd, &ch->y_n);
     uv = isp_pop(ch->uv, &ch->uv_rd, &ch->uv_n);

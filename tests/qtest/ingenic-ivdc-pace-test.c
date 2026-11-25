@@ -27,6 +27,10 @@
  * channel stopped for good ("the last not read"). VIC 0 holds the next
  * frame until that entry is read, or four frame times.
  *
+ * A T32LQ's main scaled from its sensor's frame (1080p from 1440p) put out
+ * no frame under direct_mode=1, as the raptor team's silicon runs showed:
+ * the model's channel 0 starts no IVDC frame then and keeps its buffers.
+ *
  * Copyright (C) 2026 Alfonso Gamboa <gtxent@gmail.com>
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
@@ -50,6 +54,7 @@
 #define T32_ISP_CH_EN   (ISP + 0xf0040)
 #define T32_ISP_CH0     (ISP + 0xf0100)
 #define T32_ISP_VIC     (ISP + 0x80010)
+#define T32_ISP_STATS_SIZE (ISP + 0x80)
 #define T32_VIC_STA     (ISP + 0x801e0)
 #define T32_VIC_CLR     (ISP + 0x801f0)
 #define T32_IVDC        0x13100000
@@ -294,6 +299,34 @@ static void test_t32_serve(void)
     qtest_quit(qts);
 }
 
+static void test_t32_scaled(void)
+{
+    QTestState *qts = qtest_init("-machine ingenic-t32 -device image-sensor,"
+                                 "model=jxq03,bus=i2c0,fps=25");
+
+    qtest_writel(qts, CPM_CLKGR0, 0);
+    qtest_writel(qts, CPM_CLKGR1, 0);
+    qtest_writel(qts, CPM_CIMCDR, 0);
+    qtest_writel(qts, T32_IVDC + 0x10, 64 << 16);
+    qtest_writel(qts, T32_IVDC + 0x40, 0xffffffff);
+    qtest_writel(qts, T32_ISP_STATS_SIZE, 64 << 16 | 64);
+    qtest_writel(qts, T32_ISP_CH_EN, 1);
+    for (int i = 0; i < 3; i++) {
+        t32_push(qts, 32 << 16 | 32);
+    }
+    qtest_writel(qts, T32_ISP_VIC, 1);
+    qtest_writel(qts, T32_IVDC + 0x70, 1);
+    qtest_clock_step(qts, 5 * FRAME_NS);
+    g_assert_false(t32_frame(qts));
+    g_assert_cmphex(qtest_readl(qts, T32_ISP_CH0 + 0x3c) & 1, ==, 1);
+
+    /* the frame's own size: it goes out, from the buffers still queued */
+    qtest_writel(qts, T32_ISP_CH0 + 0x04, 64 << 16 | 64);
+    qtest_clock_step(qts, 2 * FRAME_NS);
+    g_assert_true(t32_frame(qts));
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -301,5 +334,6 @@ int main(int argc, char **argv)
     qtest_add_func("/ingenic-ivdc-pace/t23/hold", test_hold);
     qtest_add_func("/ingenic-ivdc-pace/t23/switch", test_switch);
     qtest_add_func("/ingenic-ivdc-pace/t32/serve", test_t32_serve);
+    qtest_add_func("/ingenic-ivdc-pace/t32/scaled", test_t32_scaled);
     return g_test_run();
 }
