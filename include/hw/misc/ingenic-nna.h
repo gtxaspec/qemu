@@ -51,6 +51,7 @@ struct IngenicNnaState {
     uint32_t port_line[2];      /* F write line, per port */
     uint32_t port_half[2];      /* 64-byte halves written into the slot */
     uint32_t port_slot[2];      /* slot of the WFCW program */
+    uint32_t port_phase[2];     /* 0x5b bit 0: first or second slot of a pair */
     uint32_t fline;             /* T40: the F write line */
     int64_t sums[8 * 32];       /* [pixel][output channel] */
     int64_t ocb[8 * 32];        /* the sums CPOC copied */

@@ -44,7 +44,13 @@
  *     row of 4 pixels, its line from FR_WADDR (0x50, +0x51 for port 1).
  *     The RAM keeps 2-bit slices: slice k of a line's bytes goes 0x37 / 4
  *     * k lines on, over what was there, and a read sums them back (a
- *     T41NQ's, at plane strides 0x10, 0x20 and 0x40).
+ *     T41NQ's, at plane strides 0x10, 0x20 and 0x40). Writing 0x50 or
+ *     0x51 moves the line only: the program's position carries on. With
+ *     bit 0 of 0x5b (venus: stride - 1) the slots go in pairs, on lines L
+ *     and L + 1, and the program steps once a pair (a T41NQ's, on loops,
+ *     jumps and 0x50 writes between pairs, and on 4 layers of a venus
+ *     stream run with 0x5b = 1). Bit 1 of 0x5b is another layout, not
+ *     modelled.
  *   NNMAC: 8 pixels (2 rows of 4 with 0x38 bit 4) x the taps of 0x3e (bit
  *     row * 3 + column a kernel position; their W groups follow in snake
  *     order: row 1 reversed) x 0x3c + 1 planes of 32 input
@@ -191,6 +197,7 @@ static void nn_reset_engine(IngenicNnaState *s)
     memset(s->port_line, 0, sizeof(s->port_line));
     memset(s->port_half, 0, sizeof(s->port_half));
     memset(s->port_slot, 0, sizeof(s->port_slot));
+    memset(s->port_phase, 0, sizeof(s->port_phase));
     memset(s->sums, 0, sizeof(s->sums));
     memset(s->ocb, 0, sizeof(s->ocb));
     s->bt_valid = false;
@@ -284,8 +291,8 @@ static uint8_t nn_fget(IngenicNnaState *s, int64_t o)
 static void nn_fwrite(IngenicNnaState *s, unsigned p, const uint8_t *data)
 {
     unsigned slot = 4 * nn_vec(s);
-    uint32_t o = (s->port_line[p] * NN_LINE + s->port_half[p] * 64) %
-                 INGENIC_NNA_FRAM;
+    uint32_t o = ((s->port_line[p] + s->port_phase[p]) * NN_LINE +
+                  s->port_half[p] * 64) % INGENIC_NNA_FRAM;
     unsigned n;
 
     if (!extract32(s->reg[0x5a], 4 * p, 3) && !s->port_half[p] &&
@@ -309,6 +316,14 @@ static void nn_fwrite(IngenicNnaState *s, unsigned p, const uint8_t *data)
     n = s->nslots[p];
     if (!n) {
         return;
+    }
+    if (extract32(s->reg[0x5b], 0, 1)) {
+        /* a pair's second slot is a line on; 0x50 keeps the phase */
+        if (!s->port_phase[p]) {
+            s->port_phase[p] = 1;
+            return;
+        }
+        s->port_phase[p] = 0;
     }
     do {
         unsigned k = s->port_slot[p]++ % n;
@@ -572,6 +587,12 @@ static void nn_cmd(IngenicNnaState *s, unsigned imm)
         nn_reset_engine(s);
         return;
     }
+    if (imm == 0x60) {
+        /* the program starts over; only 0x50 and 0x51 set the line */
+        memset(s->port_slot, 0, sizeof(s->port_slot));
+        memset(s->port_phase, 0, sizeof(s->port_phase));
+        return;
+    }
     if (imm & 1) {
         memcpy(s->ocb, s->sums, sizeof(s->ocb));
     }
@@ -645,7 +666,10 @@ static void nn_rwr(IngenicNnaState *s, unsigned r, uint32_t v)
     case 0x50:
     case 0x51:
         s->port_line[r & 1] = r == 0x50 ? v : (s->reg[0x50] + v) % NN_LINES;
-        s->port_half[r & 1] = s->port_slot[r & 1] = 0;
+        s->port_half[r & 1] = 0;
+        if (!extract32(s->reg[0x5a], 4 * (r & 1), 3)) {
+            s->port_slot[r & 1] = 0;
+        }
         break;
     case 0x58:
         s->wfcw_ptr = v;
@@ -912,8 +936,8 @@ static int nna_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_nna = {
     .name = TYPE_INGENIC_NNA,
-    .version_id = 3,
-    .minimum_version_id = 3,
+    .version_id = 4,
+    .minimum_version_id = 4,
     .post_load = nna_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT8_ARRAY(window, IngenicNnaState, INGENIC_NNA_WINDOW),
@@ -928,6 +952,7 @@ static const VMStateDescription vmstate_nna = {
         VMSTATE_UINT32_ARRAY(port_line, IngenicNnaState, 2),
         VMSTATE_UINT32_ARRAY(port_half, IngenicNnaState, 2),
         VMSTATE_UINT32_ARRAY(port_slot, IngenicNnaState, 2),
+        VMSTATE_UINT32_ARRAY(port_phase, IngenicNnaState, 2),
         VMSTATE_UINT32(fline, IngenicNnaState),
         VMSTATE_INT64_ARRAY(sums, IngenicNnaState, 8 * 32),
         VMSTATE_INT64_ARRAY(ocb, IngenicNnaState, 8 * 32),

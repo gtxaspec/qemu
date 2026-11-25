@@ -971,6 +971,156 @@ static void test_engine_f_slices(void)
  * pixel is 1, so one MAC at W entry 0 sums the weights of the group there:
  * group 72's, 73 and 1, as a T41NQ gives it (group 0's would be 1 and 1).
  */
+/*
+ * 0x5b bit 0 (venus: stride - 1) puts a WFCW program's slots in pairs, on
+ * lines L and L + 1, the program stepping once a pair. Marker pixel n holds
+ * n / 32 + 1 in channel n % 32 and the weights are the identity, so a MAC's
+ * 8 output pixels each name the pixel they read (-1: none). The expected
+ * reads are a T41NQ's.
+ */
+static NnProg *nn_pairs_start(unsigned r5b, const uint16_t *prog,
+                              unsigned nprog, unsigned pitch)
+{
+    static const uint16_t regs[][2] = {
+        { 0x28, 2 }, { 0x3b, 0x33 }, { 0x46, 0 }, { 0x55, 2 }, { 0x38, 0x12 },
+        { 0x3f, 0xff }, { 0x2f, 0 }, { 0x2e, 0x7ff }, { 0x2c, 0x7ff },
+        { 0x3e, 1 }, { 0x3c, 0 }, { 0x3a, 0 }, { 0x37, 0x10 },
+    };
+    static const uint8_t quarter[4] = { 0x00, 0x02, 0x04, 0x07 };
+    NnProg *g = g_new0(NnProg, 1);
+    uint8_t w[256];
+
+    add(g, NN_CMD, 0);
+    for (unsigned i = 0; i < ARRAY_SIZE(regs); i++) {
+        add_word(g, NN_RWR, regs[i][0], regs[i][1]);
+    }
+    add_word(g, NN_RWR, 0x39, pitch);
+    add_word(g, NN_RWR, 0x5c, 0);
+    for (unsigned k = 0; k < 4; k++) {
+        memset(w, 0, sizeof(w));
+        if (!k) {
+            for (unsigned c = 0; c < 32; c++) {
+                w[c * 8 + c / 4] = 1 << (2 * (c % 4));
+            }
+        }
+        for (int q = 0; q < 4; q++) {
+            memcpy(add(g, NN_DWR, quarter[q])->data, &w[64 * q], 64);
+        }
+    }
+    add_word(g, NN_RWR, 0x5b, r5b);
+    add_word(g, NN_RWR, 0x45, 2);
+    add_word(g, NN_RWR, 0x58, 0);
+    for (unsigned i = 0; i < nprog; i++) {
+        add_word(g, NN_RWR, 0x59, prog[i]);
+    }
+    add_word(g, NN_RWR, 0x5a, nprog);
+    add(g, NN_CMD, 0x60);
+    add_word(g, NN_RWR, 0x50, 0);
+    return g;
+}
+
+/* two pixels of marker data, as one NNDWR 0x20 record, from pixel n */
+static void nn_marker(NnProg *g, unsigned n)
+{
+    NnRec *r = add(g, NN_DWR, 0x20);
+
+    for (unsigned i = 0; i < 2; i++) {
+        r->data[32 * i + (n + i) % 32] = (n + i) / 32 + 1;
+    }
+}
+
+static void nn_pairs_read(NnProg *g, unsigned word)
+{
+    add_word(g, NN_RWR, 0x29, 0);
+    add_word(g, NN_RWR, 0x2b, 0);
+    add_word(g, NN_RWR, 0x31, 0);
+    add_word(g, NN_RWR, 0x30, 0);
+    add_word(g, NN_MAC, 0, word);
+    add(g, NN_CMD, 0x83);
+    for (unsigned i = 0; i < 16; i++) {
+        add(g, NN_DRD, i);
+    }
+}
+
+static void nn_pairs_check(NnProg *g, const int8_t (*want)[8], unsigned macs)
+{
+    g_autofree uint8_t *out = nn_read_on("ingenic-t41", g, macs * 1024);
+
+    for (unsigned mac = 0; mac < macs; mac++) {
+        for (unsigned p = 0; p < 8; p++) {
+            for (unsigned ch = 0; ch < 32; ch++) {
+                int v = ldl_le_p(&out[mac * 1024 + p * 128 + ch * 4]);
+
+                g_assert_cmpint(v, ==, want[mac][p] == (int)ch ? 1 : 0);
+            }
+        }
+    }
+    g_free(g);
+}
+
+/* tiles of 8 records, each read by two MACs 4 lines apart */
+static void nn_pairs(unsigned r5b, const uint16_t *prog, unsigned nprog,
+                     const int8_t (*want)[8])
+{
+    NnProg *g = nn_pairs_start(r5b, prog, nprog, 8);
+
+    for (unsigned t = 0; t < 2; t++) {
+        for (unsigned i = 0; i < 8; i++) {
+            nn_marker(g, t * 16 + i * 2);
+        }
+        for (unsigned m = 0; m < 2; m++) {
+            nn_pairs_read(g, t * 64 + 4 * m);
+        }
+    }
+    nn_pairs_check(g, want, 4);
+}
+
+static void test_engine_f_pairs(void)
+{
+    static const uint16_t two[] = { 0x802, 0x80e }, one[] = { 0x801 };
+    static const int8_t paired[4][8] = {
+        { 0, 1, 2, 3, 8, 9, 10, 11 }, { 4, 5, 6, 7, 12, 13, 14, 15 },
+        { 16, 17, 18, 19, 24, 25, 26, 27 }, { 20, 21, 22, 23, 28, 29, 30, 31 },
+    }, plain[4][8] = {
+        { 0, 1, 2, 3, 4, 5, 6, 7 }, { -1, -1, -1, -1, -1, -1, -1, -1 },
+        { 8, 9, 10, 11, 12, 13, 14, 15 }, { -1, -1, -1, -1, -1, -1, -1, -1 },
+    }, overlap[4][8] = {
+        { 0, 1, 2, 3, 12, 13, 14, 15 }, { 8, 9, 10, 11, -1, -1, -1, -1 },
+        { -1, -1, -1, -1, -1, -1, -1, -1 }, { -1, -1, -1, -1, -1, -1, -1, -1 },
+    };
+
+    nn_pairs(1, two, 2, paired);
+    nn_pairs(0, two, 2, plain);
+    nn_pairs(1, one, 1, overlap);
+}
+
+/*
+ * Writing 0x50 moves the line, not the program: its position and a pair's
+ * second slot carry on. Three slots, 0x50 = 64, then three more (a T41NQ's).
+ */
+static void test_engine_f_line_keeps_program(void)
+{
+    static const uint16_t two[] = { 0x802, 0x80e };
+    static const int8_t want[4][8] = {
+        { 0, 1, 2, 3, 4, 5, 6, 7 }, { 8, 9, 10, 11, -1, -1, -1, -1 },
+        { -1, -1, -1, -1, 12, 13, 14, 15 }, { 16, 17, 18, 19, 20, 21, 22, 23 },
+    };
+    NnProg *g = nn_pairs_start(1, two, 2, 4);
+
+    for (unsigned i = 0; i < 6; i++) {
+        nn_marker(g, i * 2);
+    }
+    add_word(g, NN_RWR, 0x50, 64);
+    for (unsigned i = 6; i < 12; i++) {
+        nn_marker(g, i * 2);
+    }
+    nn_pairs_read(g, 0);
+    nn_pairs_read(g, 8);
+    nn_pairs_read(g, 256);
+    nn_pairs_read(g, 312);
+    nn_pairs_check(g, want, 4);
+}
+
 static void test_engine_w_wrap(void)
 {
     static const uint16_t regs[][2] = {
@@ -1052,5 +1202,8 @@ int main(int argc, char **argv)
     qtest_add_func("ingenic/nna/engine/t40-3x3", test_engine_t40_3x3);
     qtest_add_func("ingenic/nna/engine/f-slices", test_engine_f_slices);
     qtest_add_func("ingenic/nna/engine/w-wrap", test_engine_w_wrap);
+    qtest_add_func("ingenic/nna/engine/f-pairs", test_engine_f_pairs);
+    qtest_add_func("ingenic/nna/engine/f-line-keeps-program",
+                   test_engine_f_line_keeps_program);
     return g_test_run();
 }
