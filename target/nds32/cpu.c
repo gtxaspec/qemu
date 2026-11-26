@@ -192,6 +192,7 @@ static const TCGCPUOps nds32_tcg_ops = {
 
 #ifndef CONFIG_USER_ONLY
     .tlb_fill = nds32_cpu_tlb_fill,
+    .do_unaligned_access = nds32_cpu_do_unaligned_access,
     .pointer_wrap = cpu_pointer_wrap_uint32,
     .cpu_exec_interrupt = nds32_cpu_exec_interrupt,
     .cpu_exec_reset = cpu_reset,

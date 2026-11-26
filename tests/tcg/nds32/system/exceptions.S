@@ -59,6 +59,18 @@ sys_site:
 	bne	$r9, $r2, fail3
 	bne	$r6, $r2, fail4
 
+	/* misaligned word load: alignment check, etype 0, eva = address */
+	movi	$r9, 0
+	movi	$r6, 5
+	addi	$r16, $sp, 1
+	movi	$r0, 0
+	lw	$r17, [$r16+($r0<<0)]
+	movi	$r2, 1
+	bne	$r9, $r2, fail15
+	bnez	$r6, fail16
+	mfsr	$r4, $eva
+	bne	$r4, $r16, fail17
+
 	/* software interrupt: pend, unmask, enable gie */
 	movi	$r9, 0
 	mfsr	$r0, $int_mask
@@ -176,4 +188,7 @@ fail11:	FAIL 11
 fail12:	FAIL 12
 fail13:	FAIL 13
 fail14:	FAIL 14
+fail15:	FAIL 15
+fail16:	FAIL 16
+fail17:	FAIL 17
 fail20:	FAIL 20

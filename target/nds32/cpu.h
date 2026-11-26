@@ -201,6 +201,9 @@ extern const VMStateDescription vmstate_nds32_cpu;
 
 void nds32_cpu_do_interrupt(CPUState *cs);
 bool nds32_cpu_exec_interrupt(CPUState *cs, int interrupt_request);
+G_NORETURN void nds32_cpu_do_unaligned_access(CPUState *cs, vaddr addr,
+                                              MMUAccessType access_type,
+                                              int mmu_idx, uintptr_t retaddr);
 bool nds32_cpu_translate_for_debug(CPUState *cs, vaddr addr,
                                    TranslateForDebugResult *result);
 bool nds32_cpu_tlb_fill(CPUState *cs, vaddr address, int size,

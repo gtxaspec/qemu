@@ -329,6 +329,16 @@ bool nds32_cpu_tlb_fill(CPUState *cs, vaddr address, int size,
     return true;
 }
 
+G_NORETURN void nds32_cpu_do_unaligned_access(CPUState *cs, vaddr addr,
+                                              MMUAccessType access_type,
+                                              int mmu_idx, uintptr_t retaddr)
+{
+    CPUNDS32State *env = cpu_env(cs);
+
+    env->excp_eva = addr;
+    raise_exc(env, NDS32_VEC_GENERAL, ETYPE_ALIGN, 0, retaddr);
+}
+
 bool nds32_cpu_translate_for_debug(CPUState *cs, vaddr addr,
                                    TranslateForDebugResult *result)
 {
@@ -356,6 +366,9 @@ void nds32_cpu_do_interrupt(CPUState *cs)
 
     if (vec == NDS32_VEC_GENERAL) {
         itype = env->excp_etype | (env->excp_inst ? 1u << 4 : 0);
+        if (env->excp_etype != ETYPE_ALIGN) {
+            env->excp_eva = env->sr[SR_EVA];
+        }
     } else if (vec == NDS32_VEC_SYSCALL) {
         itype = env->excp_swid << 16;
     }

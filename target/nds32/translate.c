@@ -845,12 +845,12 @@ static bool trans_sltsi(DisasContext *ctx, arg_rri *a)
 
 static void gen_load(DisasContext *ctx, int rt, TCGv_i32 addr, MemOp mop)
 {
-    tcg_gen_qemu_ld_i32(cpu_gpr[rt], addr, 0, mop | mo_data(ctx));
+    tcg_gen_qemu_ld_i32(cpu_gpr[rt], addr, 0, mop | MO_ALIGN | mo_data(ctx));
 }
 
 static void gen_store(DisasContext *ctx, int rt, TCGv_i32 addr, MemOp mop)
 {
-    tcg_gen_qemu_st_i32(cpu_gpr[rt], addr, 0, mop | mo_data(ctx));
+    tcg_gen_qemu_st_i32(cpu_gpr[rt], addr, 0, mop | MO_ALIGN | mo_data(ctx));
 }
 
 static bool ls_imm(DisasContext *ctx, int rt, int ra, int32_t off, MemOp mop,
