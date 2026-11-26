@@ -292,6 +292,8 @@ static void atbm_hera_init(MachineState *machine)
     sysbus_connect_irq(SYS_BUS_DEVICE(dev), 0,
                        qdev_get_gpio_in(m->pit_or, 1));
 
+    dev = atbm_hera_dev(m, "atbm-hera-gpio", "gpio", 0x16800000, 23, NULL);
+    sysbus_mmio_map(SYS_BUS_DEVICE(dev), 1, 0x17400000);
     dev = atbm_hera_dev(m, "atbm-hera-rtc", "rtc1", 0x16700000, 25, NULL);
     atbm_hera_connect(m, dev, 1, 26);
     dev = atbm_hera_dev(m, "atbm-hera-rtc", "rtc2", 0x17100000, 15, NULL);
