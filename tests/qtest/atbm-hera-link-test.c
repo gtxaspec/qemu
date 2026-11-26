@@ -68,6 +68,10 @@
 #define G_DIR0          0x28
 #define G_DOUT          0x24
 #define G_DO0           0x2c
+#define HERA_WDT        0x16600000
+#define W_CTRL          0x10
+#define W_WEN           0x18
+#define W_UNIT          0x20
 #define HERA_UART1      0x16200000
 #define U_THR           0x20
 
@@ -319,7 +323,8 @@ static void test_wire(void)
     Seen *s;
 
     /* the SoC answers the chip's hello, and the chip lists no pad */
-    chip_expect(c, AHL_HELLO, 0, 0, ATBM_HERA_LINK_VERSION);
+    chip_expect(c, AHL_HELLO, ATBM_HERA_LINK_CAP_CHIP_RESET, 0,
+                ATBM_HERA_LINK_VERSION);
     sdio_enumerate(qts);
 
     /* the CCCR the card keeps, and tells the chip of what is written */
@@ -394,6 +399,119 @@ static void test_wire(void)
     g_assert_true(qtest_get_irq(qts, 9));
     g_assert_false(qtest_get_irq(qts, 8));
 
+    qtest_quit(qts);
+    fake_chip_stop(c);
+}
+
+/* What the SoC's card does when the chip says it has reset */
+
+static void wait_until(QTestState *qts, bool (*done)(QTestState *, int),
+                       int arg)
+{
+    for (int tries = 0; !done(qts, arg); tries++) {
+        g_assert_cmpint(tries, <, 5000);
+        qtest_clock_step(qts, 1000000);
+        g_usleep(1000);
+    }
+}
+
+/* the card's card-detect line, which is the host's event in a socket */
+static bool card_detect_is(QTestState *qts, int want)
+{
+    return qtest_get_irq(qts, 0) == want;
+}
+
+static bool power_is(QTestState *qts, int want)
+{
+    return qtest_readb(qts, SDHCI + SD_POWER) == want;
+}
+
+static QTestState *chip_reset_start(FakeChip **c, const char *sock,
+                                    const char *mode)
+{
+    QTestState *qts;
+
+    *c = fake_chip_start(sock);
+    qts = qtest_initf("-machine ingenic-t41 "
+                      "-chardev socket,id=hl,path=%s "
+                      "-device atbm-hera-link-sdio,id=h,bus=msc0,chardev=hl%s",
+                      sock, mode);
+    chip_expect(*c, AHL_HELLO, ATBM_HERA_LINK_CAP_CHIP_RESET, 0,
+                ATBM_HERA_LINK_VERSION);
+    sdio_enumerate(qts);
+    return qts;
+}
+
+/* A request is answered after what the chip sent before it */
+static void chip_sync(QTestState *qts, FakeChip *c)
+{
+    sd_io_direct(qts, false, 1, 0x00, 0);
+    chip_expect(c, AHL_SDIO_READ, 1, 0x00, 1);
+}
+
+static void test_chip_reset_ignore(void)
+{
+    g_autofree char *sock = sock_path("ignore");
+    FakeChip *c;
+    QTestState *qts = chip_reset_start(&c, sock, "");
+
+    sd_io_direct(qts, true, 0, CCCR_IOE, 0x02);
+    chip_expect(c, AHL_SDIO_CFG, CCCR_IOE, 0, 0x02);
+    chip_send(c, AHL_CHIP_RESET, AHL_CHIP_RESET_REQUEST, 0, 0, NULL, 0);
+    chip_sync(qts, c);
+    chip_send(c, AHL_CHIP_RESET, AHL_CHIP_RESET_WDT, 0, 0, NULL, 0);
+    chip_sync(qts, c);
+    g_assert_cmphex(sd_io_direct(qts, false, 0, CCCR_IOE, 0), ==, 0x02);
+    qtest_quit(qts);
+    fake_chip_stop(c);
+}
+
+static void test_chip_reset_soc(void)
+{
+    g_autofree char *sock = sock_path("soc");
+    FakeChip *c;
+    QTestState *qts = chip_reset_start(&c, sock, ",on-chip-reset=soc-reset");
+
+    /* the chip's first word after it starts says nothing to the SoC */
+    qtest_writeb(qts, SDHCI + SD_POWER, 0x0b);
+    chip_send(c, AHL_CHIP_RESET, AHL_CHIP_RESET_COLD, 0, 0, NULL, 0);
+    chip_sync(qts, c);
+    g_assert_cmphex(qtest_readb(qts, SDHCI + SD_POWER), ==, 0x0b);
+
+    /* a reset it asked for does: the SoC starts over */
+    chip_send(c, AHL_CHIP_RESET, AHL_CHIP_RESET_REQUEST, 0, 0, NULL, 0);
+    wait_until(qts, power_is, 0);
+    qtest_quit(qts);
+    fake_chip_stop(c);
+}
+
+static void test_chip_reset_card(void)
+{
+    g_autofree char *sock = sock_path("card");
+    FakeChip *c;
+    QTestState *qts = chip_reset_start(&c, sock, ",on-chip-reset=card-reset,"
+                                       "reinsert-ms=50");
+
+    qtest_irq_intercept_out_named(qts, "/machine/peripheral/h",
+                                  "card-detect");
+    sd_io_direct(qts, true, 0, CCCR_IOE, 0x02);
+    chip_expect(c, AHL_SDIO_CFG, CCCR_IOE, 0, 0x02);
+
+    /* the chip's first word after it starts says nothing to the card */
+    chip_send(c, AHL_CHIP_RESET, AHL_CHIP_RESET_COLD, 0, 0, NULL, 0);
+    chip_sync(qts, c);
+    g_assert_cmphex(sd_io_direct(qts, false, 0, CCCR_IOE, 0), ==, 0x02);
+
+    /* the card leaves the bus, starts over and tells the chip of it */
+    chip_send(c, AHL_CHIP_RESET, AHL_CHIP_RESET_WDT, 0, 0, NULL, 0);
+    chip_expect(c, AHL_SDIO_RESET, 0, 0, 0);
+    g_assert_false(card_detect_is(qts, 1));
+
+    /* and returns after reinsert-ms, ready to be enumerated again */
+    qtest_clock_step(qts, 60 * 1000000LL);
+    wait_until(qts, card_detect_is, 1);
+    sdio_enumerate(qts);
+    g_assert_cmphex(sd_io_direct(qts, false, 0, CCCR_IOE, 0), ==, 0);
     qtest_quit(qts);
     fake_chip_stop(c);
 }
@@ -553,6 +671,23 @@ static void test_pair_power(void)
     pair_stop(&p);
 }
 
+/* The chip's watchdog resets it, and the SoC, set to follow, resets too */
+static void test_pair_wdt(void)
+{
+    Pair p = pair_start(",on-chip-reset=soc-reset");
+
+    qtest_writeb(p.host, SDHCI + SD_POWER, 0x0b);
+    qtest_writel(p.chip, HERA_WDT + W_WEN, 0x5aa5);
+    qtest_writel(p.chip, HERA_WDT + W_UNIT, 1 | 1 << 10 | 1 << 20);
+    qtest_writel(p.chip, HERA_WDT + W_WEN, 0x5aa5);
+    /* interrupt and all-reset enabled, on PCLK, 64 clocks then 16 and 16 */
+    qtest_writel(p.chip, HERA_WDT + W_CTRL, BIT(0) | BIT(1) | BIT(2) |
+                 BIT(4) | BIT(6));
+    qtest_clock_step(p.chip, 3000);
+    wait_until(p.host, power_is, 0);
+    pair_stop(&p);
+}
+
 int main(int argc, char **argv)
 {
     int ret;
@@ -565,12 +700,17 @@ int main(int argc, char **argv)
     link_dir = g_dir_make_tmp("atbm-hera-link-XXXXXX", NULL);
     g_assert_nonnull(link_dir);
     qtest_add_func("atbm-hera-link/wire", test_wire);
+    qtest_add_func("atbm-hera-link/chip-reset/ignore", test_chip_reset_ignore);
+    qtest_add_func("atbm-hera-link/chip-reset/soc-reset", test_chip_reset_soc);
+    qtest_add_func("atbm-hera-link/chip-reset/card-reset",
+                   test_chip_reset_card);
     if (getenv(NDS32_VAR) &&
         qtest_has_machine_with_env(NDS32_VAR, "atbm-hera")) {
         qtest_add_func("atbm-hera-link/pair/sdio", test_pair_sdio);
         qtest_add_func("atbm-hera-link/pair/gpio", test_pair_gpio);
         qtest_add_func("atbm-hera-link/pair/uart", test_pair_uart);
         qtest_add_func("atbm-hera-link/pair/power", test_pair_power);
+        qtest_add_func("atbm-hera-link/pair/wdt", test_pair_wdt);
     }
     ret = g_test_run();
     g_rmdir(link_dir);

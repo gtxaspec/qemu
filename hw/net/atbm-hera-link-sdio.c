@@ -17,6 +17,15 @@
  * charger). The same lines are named gpios of the card for a test: input
  * "power", "reset" and "pad-in" 0..27, output "pad-out" 0..27.
  *
+ * "on-chip-reset" is what the card does when the chip says that it has reset
+ * (the board's watchdog or reset request): "ignore" does nothing; "soc-reset"
+ * resets the whole SoC, as the board does when the chip's watchdog cuts the
+ * SoC's supply; "card-reset" takes the card off the bus and puts it back
+ * after "reinsert-ms" of virtual time (the host's card-detect line moves,
+ * and "cd-pin" is a SoC pin that follows it, low while the card is in), as
+ * a socket does, so that the kernel enumerates it again. The chip's first
+ * message after it starts is not acted on in any mode.
+ *
  * -device atbm6441 is the model of the chip's behaviour that needs no
  * second QEMU; this card never changes what that one does.
  *
@@ -32,6 +41,7 @@
 #include "qemu/bswap.h"
 #include "qemu/module.h"
 #include "qemu/cutils.h"
+#include "qemu/timer.h"
 #include "qom/object.h"
 #include "qapi/visitor.h"
 #include "chardev/char-fe.h"
@@ -41,11 +51,18 @@
 #include "hw/gpio/ingenic-gpio.h"
 #include "hw/misc/atbm-hera-link.h"
 #include "hw/sd/sdio.h"
+#include "system/runstate.h"
 #include "migration/blocker.h"
 #include "trace.h"
 
 #define TYPE_ATBM_HERA_LINK_SDIO "atbm-hera-link-sdio"
 OBJECT_DECLARE_SIMPLE_TYPE(AtbmHeraLinkSdioState, ATBM_HERA_LINK_SDIO)
+
+enum {
+    CHIP_RESET_IGNORE,
+    CHIP_RESET_CARD,
+    CHIP_RESET_SOC,
+};
 
 struct AtbmHeraLinkSdioState {
     SDIOCard parent_obj;
@@ -57,6 +74,15 @@ struct AtbmHeraLinkSdioState {
     int32_t reset_pin;
     char *from_chip;
     char *to_chip;
+    char *on_chip_reset;
+    int32_t cd_pin;
+    uint32_t reinsert_ms;
+    int chip_reset;             /* CHIP_RESET_* */
+    QEMUTimer *reinsert;
+    QEMUBH *remove_bh;
+    bool absent;                /* taken off the bus by a chip reset */
+    bool chip_irq;
+    qemu_irq card_detect;
 
     bool up;                    /* the chip has said hello */
     AtbmHeraLinkMsg rx;
@@ -89,6 +115,50 @@ static void hl_send(AtbmHeraLinkSdioState *s, uint32_t type, uint32_t a,
     }
 }
 
+/* From a bottom half: the message comes in the middle of a transfer */
+static void hl_card_remove(void *opaque)
+{
+    AtbmHeraLinkSdioState *s = opaque;
+    SDBus *bus = SD_BUS(qdev_get_parent_bus(DEVICE(s)));
+
+    /* the card starts over, and the chip is told of the bus reset */
+    device_cold_reset(DEVICE(s));
+    sdbus_set_inserted(bus, false);
+    qemu_set_irq(s->card_detect, 0);
+    timer_mod(s->reinsert, qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) +
+                           s->reinsert_ms);
+}
+
+static void hl_card_reinsert(void *opaque)
+{
+    AtbmHeraLinkSdioState *s = opaque;
+    SDBus *bus = SD_BUS(qdev_get_parent_bus(DEVICE(s)));
+
+    s->absent = false;
+    sdbus_set_inserted(bus, true);
+    qemu_set_irq(s->card_detect, 1);
+    sdio_card_set_irq(SDIO_CARD(s), 1, s->chip_irq);
+}
+
+static void hl_chip_reset(AtbmHeraLinkSdioState *s, uint32_t reason)
+{
+    trace_atbm_hera_link_sdio_chip_reset(reason, s->chip_reset);
+    if (reason == AHL_CHIP_RESET_COLD) {
+        return;
+    }
+    switch (s->chip_reset) {
+    case CHIP_RESET_SOC:
+        qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
+        break;
+    case CHIP_RESET_CARD:
+        s->absent = true;
+        qemu_bh_schedule(s->remove_bh);
+        break;
+    default:
+        break;
+    }
+}
+
 /* The chip's messages that need no answer */
 static void hl_message(AtbmHeraLinkSdioState *s, const AtbmHeraLinkMsg *m)
 {
@@ -106,7 +176,8 @@ static void hl_message(AtbmHeraLinkSdioState *s, const AtbmHeraLinkMsg *m)
             return;
         }
         s->up = true;
-        hl_send(s, AHL_HELLO, 0, 0, ATBM_HERA_LINK_VERSION, NULL, 0);
+        hl_send(s, AHL_HELLO, ATBM_HERA_LINK_CAP_CHIP_RESET, 0,
+                ATBM_HERA_LINK_VERSION, NULL, 0);
         if (s->power_set) {
             hl_send(s, AHL_POWER, 0, 0, s->power, NULL, 0);
         }
@@ -121,7 +192,13 @@ static void hl_message(AtbmHeraLinkSdioState *s, const AtbmHeraLinkMsg *m)
         }
         break;
     case AHL_IRQ:
-        sdio_card_set_irq(SDIO_CARD(s), 1, !!c);
+        s->chip_irq = !!c;
+        if (!s->absent) {
+            sdio_card_set_irq(SDIO_CARD(s), 1, !!c);
+        }
+        break;
+    case AHL_CHIP_RESET:
+        hl_chip_reset(s, a);
         break;
     case AHL_PAD:
         if (a < ATBM_HERA_LINK_PADS) {
@@ -189,7 +266,7 @@ static void hl_read(SDIOCard *card, unsigned fn, uint32_t addr, bool incr,
     AtbmHeraLinkSdioState *s = ATBM_HERA_LINK_SDIO(card);
 
     memset(buf, 0, len);
-    if (!s->up || len > ATBM_HERA_LINK_MAX_XFER) {
+    if (!s->up || s->absent || len > ATBM_HERA_LINK_MAX_XFER) {
         return;
     }
     hl_send(s, AHL_SDIO_READ, fn, addr,
@@ -202,7 +279,7 @@ static void hl_write(SDIOCard *card, unsigned fn, uint32_t addr, bool incr,
 {
     AtbmHeraLinkSdioState *s = ATBM_HERA_LINK_SDIO(card);
 
-    if (!s->up || len > ATBM_HERA_LINK_MAX_XFER) {
+    if (!s->up || s->absent || len > ATBM_HERA_LINK_MAX_XFER) {
         return;
     }
     hl_send(s, AHL_SDIO_WRITE, fn, addr,
@@ -225,7 +302,11 @@ static void hl_vendor_write(SDIOCard *card, uint32_t addr, uint8_t val)
 
 static void hl_f0_write(SDIOCard *card, uint32_t addr, uint8_t val)
 {
-    hl_send(ATBM_HERA_LINK_SDIO(card), AHL_SDIO_CFG, addr, 0, val, NULL, 0);
+    AtbmHeraLinkSdioState *s = ATBM_HERA_LINK_SDIO(card);
+
+    if (!s->absent) {
+        hl_send(s, AHL_SDIO_CFG, addr, 0, val, NULL, 0);
+    }
 }
 
 static void hl_io_reset(SDIOCard *card)
@@ -360,8 +441,8 @@ static bool hl_wire(AtbmHeraLinkSdioState *s, Error **errp)
     bool ambiguous;
     Object *o;
 
-    if (s->power_pin < 0 && s->reset_pin < 0 && !s->from_chip &&
-        !s->to_chip) {
+    if (s->power_pin < 0 && s->reset_pin < 0 && s->cd_pin < 0 &&
+        !s->from_chip && !s->to_chip) {
         return true;
     }
     o = object_resolve_path_type("", TYPE_INGENIC_GPIO, &ambiguous);
@@ -379,6 +460,11 @@ static bool hl_wire(AtbmHeraLinkSdioState *s, Error **errp)
         qdev_connect_gpio_out_named(s->gpio, "pad", s->reset_pin,
             qdev_get_gpio_in_named(DEVICE(s), "reset", 0));
     }
+    if (s->cd_pin >= 0) {
+        qdev_connect_gpio_out_named(DEVICE(s), "card-detect", 0,
+            qemu_irq_invert(qdev_get_gpio_in_named(s->gpio, "pull",
+                                                   s->cd_pin)));
+    }
     return hl_wire_list(s, s->from_chip, true, errp) &&
            hl_wire_list(s, s->to_chip, false, errp);
 }
@@ -393,6 +479,19 @@ static void hl_realize(DeviceState *dev, Error **errp)
                    "is not set");
         return;
     }
+    if (!s->on_chip_reset || !strcmp(s->on_chip_reset, "ignore")) {
+        s->chip_reset = CHIP_RESET_IGNORE;
+    } else if (!strcmp(s->on_chip_reset, "card-reset")) {
+        s->chip_reset = CHIP_RESET_CARD;
+    } else if (!strcmp(s->on_chip_reset, "soc-reset")) {
+        s->chip_reset = CHIP_RESET_SOC;
+    } else {
+        error_setg(errp, "\"on-chip-reset\" is ignore, card-reset or "
+                   "soc-reset, not \"%s\"", s->on_chip_reset);
+        return;
+    }
+    s->reinsert = timer_new_ms(QEMU_CLOCK_VIRTUAL, hl_card_reinsert, s);
+    s->remove_bh = qemu_bh_new(hl_card_remove, s);
     if (!hl_wire(s, errp)) {
         return;
     }
@@ -409,6 +508,7 @@ static void hl_realize(DeviceState *dev, Error **errp)
                    "first, with its link chardev a server)");
         return;
     }
+    qemu_set_irq(s->card_detect, 1);
     hl_message(s, &hello);
     qemu_chr_fe_set_handlers(&s->chr, hl_can_read, hl_receive, hl_event,
                              NULL, s, NULL, true);
@@ -416,7 +516,11 @@ static void hl_realize(DeviceState *dev, Error **errp)
 
 static void hl_unrealize(DeviceState *dev)
 {
-    qemu_chr_fe_deinit(&ATBM_HERA_LINK_SDIO(dev)->chr, false);
+    AtbmHeraLinkSdioState *s = ATBM_HERA_LINK_SDIO(dev);
+
+    qemu_chr_fe_deinit(&s->chr, false);
+    timer_free(s->reinsert);
+    qemu_bh_delete(s->remove_bh);
 }
 
 static void hl_init(Object *obj)
@@ -428,6 +532,7 @@ static void hl_init(Object *obj)
     qdev_init_gpio_in_named(dev, hl_reset_in, "reset", 1);
     qdev_init_gpio_in_named(dev, hl_pad_in, "pad-in", ATBM_HERA_LINK_PADS);
     qdev_init_gpio_out_named(dev, s->pad_out, "pad-out", ATBM_HERA_LINK_PADS);
+    qdev_init_gpio_out_named(dev, &s->card_detect, "card-detect", 1);
     for (unsigned n = 0; n < ATBM_HERA_LINK_PADS; n++) {
         g_autofree char *name = g_strdup_printf("pad%u", n);
 
@@ -443,6 +548,9 @@ static const Property hl_props[] = {
     DEFINE_PROP_INT32("reset-pin", AtbmHeraLinkSdioState, reset_pin, -1),
     DEFINE_PROP_STRING("from-chip", AtbmHeraLinkSdioState, from_chip),
     DEFINE_PROP_STRING("to-chip", AtbmHeraLinkSdioState, to_chip),
+    DEFINE_PROP_STRING("on-chip-reset", AtbmHeraLinkSdioState, on_chip_reset),
+    DEFINE_PROP_INT32("cd-pin", AtbmHeraLinkSdioState, cd_pin, -1),
+    DEFINE_PROP_UINT32("reinsert-ms", AtbmHeraLinkSdioState, reinsert_ms, 200),
 };
 
 static void hl_class_init(ObjectClass *oc, const void *data)

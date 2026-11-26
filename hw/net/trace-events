@@ -730,3 +730,4 @@ bcm2838_genet_rx_dma_ring_active(unsigned int ring, const char *ring_state) "rin
 # atbm-hera-link-sdio.c
 atbm_hera_link_sdio_tx(uint32_t type, uint32_t a, uint32_t b, uint32_t c) "to the chip: type %u a 0x%x b 0x%x c 0x%x"
 atbm_hera_link_sdio_rx(uint32_t type, uint32_t a, uint32_t b, uint32_t c) "from the chip: type %u a 0x%x b 0x%x c 0x%x"
+atbm_hera_link_sdio_chip_reset(uint32_t reason, int mode) "the chip reset, reason %u, mode %d"

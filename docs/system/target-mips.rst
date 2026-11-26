@@ -157,7 +157,8 @@ run the chip's own firmware instead, start it in ``qemu-system-nds32``
 and give the camera's QEMU the matching card. The chip is the server, so
 start it first::
 
-   qemu-system-nds32 -M atbm-hera -display none -kernel iot.out \
+   qemu-system-nds32 -M atbm-hera -icount shift=auto,sleep=on \
+       -display none -kernel iot.out \
        -chardev socket,id=hl,path=/tmp/hera.link,server=on,wait=off \
        -global atbm-hera-link.chardev=hl \
        -chardev socket,id=hu,path=/tmp/hera.uart,server=on,wait=off \
@@ -178,6 +179,34 @@ reset and pads, and ``pad<N>=0|1`` drives a chip pad from the start or with
 numbered 24 is driven high (its wake level, in the firmware's GPIO
 numbers). The same lines are named gpios of the card. The protocol
 is in ``include/hw/misc/atbm-hera-link.h``.
+
+Run the chip with ``-icount shift=auto,sleep=on``: without it the chip's
+time follows the host's, and its watchdog resets it whenever its process
+falls a few seconds behind, which a loaded host does to it. The camera
+runs in real time. The ATBM6461 pairs the same way, ``-M atbm6461`` with
+the chip's flash image as ``-drive if=mtd``; the host driver needs no
+pad numbered 24 there.
+
+When the chip resets, its own firmware's watchdog or reboot included, the
+board of a real camera cuts the camera's power with it, and the camera's
+driver has no way to follow the chip that restarted under it. The chip
+tells the card (the reasons are a reset the firmware asked for and a
+watchdog's last stage), and ``on-chip-reset`` says what the card does:
+
+``ignore``
+   nothing (the default): the camera runs on, as it did before the
+   message existed
+``card-reset``
+   the card leaves the bus, starts over, and comes back after
+   ``reinsert-ms`` (200) of virtual time, with the host's card-detect
+   line moving, and ``cd-pin`` (a camera pin, low while the card is in)
+   following it; the kernel must watch that line to enumerate it again
+``soc-reset``
+   the whole camera resets and boots again, as the real board does
+
+The chip's first word after it starts is not acted on in any mode. A
+camera or a chip of an older build ignores or is not sent the message
+(it is sent only to a card that says in its hello that it takes it).
 
 Example - boot a flash image::
 
