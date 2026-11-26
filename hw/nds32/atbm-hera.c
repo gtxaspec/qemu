@@ -140,6 +140,7 @@ struct AtbmHeraMachine {
     DeviceState *nmi_or;
     AtbmHeraNorState *nor;
     uint32_t entry;
+    uint64_t hif_port;
     bool wire_cpu;
 };
 
@@ -332,6 +333,10 @@ static void atbm_hera_init(MachineState *machine)
                                 qdev_get_gpio_in_named(dmac, "req", 8));
     qdev_connect_gpio_out_named(dev, "dreq-rx", 0,
                                 qdev_get_gpio_in_named(dmac, "req", 9));
+    dev = atbm_hera_dev(m, "atbm-hera-hif", "hif", 0x0ab00000, 10, NULL);
+    if (m->hif_port) {
+        sysbus_mmio_map(SYS_BUS_DEVICE(dev), 1, m->hif_port);
+    }
     dev = atbm_hera_dev(m, "atbm-hera-smu", "smu", 0x16100000, 28, NULL);
     atbm_hera_connect(m, dev, 1, 30);
     dev = atbm_hera_dev(m, "atbm-hera-gpio", "gpio", 0x16800000, 23, NULL);
@@ -372,6 +377,17 @@ static void atbm_hera_set_wire(Object *obj, bool value, Error **errp)
     ATBM_HERA_MACHINE(obj)->wire_cpu = value;
 }
 
+static void atbm_hera_instance_init(Object *obj)
+{
+    AtbmHeraMachine *m = ATBM_HERA_MACHINE(obj);
+
+    object_property_add_uint64_ptr(obj, "hif-host-port", &m->hif_port,
+                                   OBJ_PROP_FLAG_READWRITE);
+    object_property_set_description(obj, "hif-host-port",
+        "map the HIF's host test port (a CPU or qtest plays the SDIO host) "
+        "at this address; 0 leaves it out");
+}
+
 static void atbm_hera_machine_class_init(ObjectClass *oc, const void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
@@ -392,6 +408,7 @@ static const TypeInfo atbm_hera_machine_info = {
     .name = TYPE_ATBM_HERA_MACHINE,
     .parent = TYPE_MACHINE,
     .instance_size = sizeof(AtbmHeraMachine),
+    .instance_init = atbm_hera_instance_init,
     .class_init = atbm_hera_machine_class_init,
 };
 
