@@ -47,6 +47,9 @@
  *   written; the first read fetches LEN bytes and the reads stream them),
  *   0x14 the host interrupt level, 0x18 function 1's block size.
  *
+ * A descriptor's offset is in bytes, or in words ("offset-shift" 2, the
+ * 6461's) from the SRAM base.
+ *
  * Not modelled: the SDIO bus (the card model has it), the block size but
  * for where a message starts, the CRC and framing errors, the sleep
  * handshake beyond CONTROL's, the prefetch (reads of a window are direct),
@@ -139,6 +142,7 @@ struct AtbmHeraHifState {
 
     bool input64;
     uint32_t sram_base;
+    uint32_t off_shift;         /* "offset-shift" */
 
     uint32_t reg[HIF_REGS];     /* the rings and the kept registers */
     uint32_t inten;
@@ -253,7 +257,8 @@ static void hif_queue_write(AtbmHeraHifState *s, unsigned buf_id,
             break;
         }
         if (address_space_write(&address_space_memory,
-                                s->sram_base + (*d & DESC_OFF_MASK),
+                                s->sram_base +
+                                ((*d & DESC_OFF_MASK) << s->off_shift),
                                 MEMTXATTRS_UNSPECIFIED, buf,
                                 msg) != MEMTX_OK) {
             s->raw |= INT_ERR_NUM;
@@ -287,7 +292,7 @@ static void hif_queue_read(AtbmHeraHifState *s, unsigned buf_id,
                       "descriptor %u is next\n", buf_id, idx);
     }
     address_space_read(&address_space_memory,
-                       s->sram_base + (a & DESC_OFF_MASK),
+                       s->sram_base + ((a & DESC_OFF_MASK) << s->off_shift),
                        MEMTXATTRS_UNSPECIFIED, buf,
                        MIN(len, (size_t)((b >> 1) & 0x7fff) * 2));
     trace_atbm_hera_hif_output(idx, a & DESC_OFF_MASK, (b >> 1) & 0x7fff);
@@ -614,6 +619,7 @@ static const VMStateDescription vmstate_hif = {
 static const Property hif_props[] = {
     DEFINE_PROP_BOOL("input64", AtbmHeraHifState, input64, true),
     DEFINE_PROP_UINT32("sram-base", AtbmHeraHifState, sram_base, 0x09000000),
+    DEFINE_PROP_UINT32("offset-shift", AtbmHeraHifState, off_shift, 0),
 };
 
 static void hif_class_init(ObjectClass *oc, const void *data)
