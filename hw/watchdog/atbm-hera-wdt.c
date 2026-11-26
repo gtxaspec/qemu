@@ -16,7 +16,8 @@
  * of everything. A restart goes back to the first. At the end of the CPU
  * reset stage, with CTRL[6] set, ST[1] is set and the "cpu-reset" line
  * pulses; at the end of the last, with CTRL[4] set, the machine is reset
- * the way -watchdog-action says. The stage lengths are
+ * the way -watchdog-action says, and the "all-reset" line pulses first if
+ * that is a reset. The stage lengths are
  *   interrupt  CTRL[9:7] -> 64 256 1024 2048 4096 8192 16384 32768 clocks
  *   CPU reset  CTRL[13:11], all reset CTRL[17:15] -> 16 64 256 1024 2048
  *              4096 8192 16384 clocks
@@ -79,6 +80,7 @@ struct AtbmHeraWdtState {
     MemoryRegion iomem;
     qemu_irq nmi;
     qemu_irq cpu_reset;
+    qemu_irq all_reset;
     QEMUTimer *timer;
 
     uint32_t ctrl;
@@ -159,6 +161,9 @@ static void wdt_expire(void *opaque)
         break;
     default:
         if (s->ctrl & CTRL_ALLRST) {
+            if (get_watchdog_action() == WATCHDOG_ACTION_RESET) {
+                qemu_irq_pulse(s->all_reset);
+            }
             watchdog_perform_action();
         }
         break;
@@ -289,6 +294,7 @@ static void wdt_init(Object *obj)
 
     sysbus_init_irq(SYS_BUS_DEVICE(obj), &s->nmi);
     qdev_init_gpio_out_named(DEVICE(obj), &s->cpu_reset, "cpu-reset", 1);
+    qdev_init_gpio_out_named(DEVICE(obj), &s->all_reset, "all-reset", 1);
 }
 
 static const VMStateDescription vmstate_wdt = {
