@@ -381,6 +381,11 @@ static void test_wire(void)
     chip_expect(c, AHL_RESET, 0, 0, 0);
     qtest_set_irq_in(qts, "/machine/peripheral/h", "pad-in", 4, 1);
     chip_expect(c, AHL_PAD, 4, 0, 1);
+    /* a pad's property drives it as well, and says what it drives */
+    qtest_qmp_assert_success(qts, "{'execute': 'qom-set', 'arguments': "
+        "{'path': '/machine/peripheral/h', 'property': 'pad24', "
+        "'value': 1}}");
+    chip_expect(c, AHL_PAD, 24, 0, 1);
     qtest_irq_intercept_out_named(qts, "/machine/peripheral/h", "pad-out");
     chip_send(c, AHL_PAD, 9, 0, 1, NULL, 0);
     sd_io_direct(qts, false, 1, 0x00, 0);

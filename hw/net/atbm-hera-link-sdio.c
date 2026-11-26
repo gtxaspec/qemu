@@ -32,6 +32,8 @@
 #include "qemu/bswap.h"
 #include "qemu/module.h"
 #include "qemu/cutils.h"
+#include "qom/object.h"
+#include "qapi/visitor.h"
 #include "chardev/char-fe.h"
 #include "hw/core/irq.h"
 #include "hw/core/qdev-properties.h"
@@ -278,6 +280,38 @@ static void hl_reset_in(void *opaque, int n, int level)
     hl_send(s, AHL_RESET, 0, 0, s->reset, NULL, 0);
 }
 
+static void hl_pad_get(Object *obj, Visitor *v, const char *name,
+                       void *opaque, Error **errp)
+{
+    AtbmHeraLinkSdioState *s = ATBM_HERA_LINK_SDIO(obj);
+    unsigned n = GPOINTER_TO_UINT(opaque);
+    int64_t val = -1;
+
+    if (s->pad_driven & BIT(n)) {
+        val = extract32(s->pad_level, n, 1);
+    }
+    visit_type_int(v, name, &val, errp);
+}
+
+static void hl_pad_in(void *opaque, int n, int level);
+
+static void hl_pad_set(Object *obj, Visitor *v, const char *name,
+                       void *opaque, Error **errp)
+{
+    AtbmHeraLinkSdioState *s = ATBM_HERA_LINK_SDIO(obj);
+    unsigned n = GPOINTER_TO_UINT(opaque);
+    int64_t val;
+
+    if (!visit_type_int(v, name, &val, errp)) {
+        return;
+    }
+    if (val < 0 || val > 1) {
+        error_setg(errp, "a pad is driven to 0 or 1; it cannot be let go");
+        return;
+    }
+    hl_pad_in(s, n, val);
+}
+
 static void hl_pad_in(void *opaque, int n, int level)
 {
     AtbmHeraLinkSdioState *s = opaque;
@@ -394,6 +428,13 @@ static void hl_init(Object *obj)
     qdev_init_gpio_in_named(dev, hl_reset_in, "reset", 1);
     qdev_init_gpio_in_named(dev, hl_pad_in, "pad-in", ATBM_HERA_LINK_PADS);
     qdev_init_gpio_out_named(dev, s->pad_out, "pad-out", ATBM_HERA_LINK_PADS);
+    for (unsigned n = 0; n < ATBM_HERA_LINK_PADS; n++) {
+        g_autofree char *name = g_strdup_printf("pad%u", n);
+
+        object_property_add(obj, name, "int", &int_type_info, hl_pad_get,
+                            hl_pad_set, NULL,
+                            GUINT_TO_POINTER(n));
+    }
 }
 
 static const Property hl_props[] = {

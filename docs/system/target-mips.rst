@@ -173,7 +173,10 @@ CCCR and FBR writes. The UART between them is a plain chardev socket,
 the camera's UART0 to the chip's UART1. ``power-pin``, ``reset-pin``,
 ``from-chip`` and ``to-chip`` (pins as ``32 * port + bit``, chip pads as
 the chip's GPIO numbers) wire the camera's GPIO block to the chip's power,
-reset and pads; the same lines are named gpios of the card. The protocol
+reset and pads, and ``pad<N>=0|1`` drives a chip pad from the start or with
+``qom-set``; the SDK's SDIO firmware sets its SDIO up only once the pad
+numbered 24 is driven high (its wake level, in the firmware's GPIO
+numbers). The same lines are named gpios of the card. The protocol
 is in ``include/hw/misc/atbm-hera-link.h``.
 
 Example - boot a flash image::
