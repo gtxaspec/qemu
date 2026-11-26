@@ -1,0 +1,2 @@
+config NDS32
+    bool

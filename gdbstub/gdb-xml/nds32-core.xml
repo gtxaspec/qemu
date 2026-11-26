@@ -1,0 +1,93 @@
+<?xml version="1.0"?>
+<!-- Copyright (c) 2026 gtxaspec
+
+     Copying and distribution of this file, with or without modification,
+     are permitted in any medium without royalty provided the copyright
+     notice and this notice are preserved.  -->
+
+<!-- Register names are the ones the Andes gdb looks for in the
+     org.gnu.gdb.nds32.core feature.  -->
+
+<!DOCTYPE feature SYSTEM "gdb-target.dtd">
+<feature name="org.gnu.gdb.nds32.core">
+  <reg name="r0" bitsize="32" type="uint32"/>
+  <reg name="r1" bitsize="32" type="uint32"/>
+  <reg name="r2" bitsize="32" type="uint32"/>
+  <reg name="r3" bitsize="32" type="uint32"/>
+  <reg name="r4" bitsize="32" type="uint32"/>
+  <reg name="r5" bitsize="32" type="uint32"/>
+  <reg name="r6" bitsize="32" type="uint32"/>
+  <reg name="r7" bitsize="32" type="uint32"/>
+  <reg name="r8" bitsize="32" type="uint32"/>
+  <reg name="r9" bitsize="32" type="uint32"/>
+  <reg name="r10" bitsize="32" type="uint32"/>
+  <reg name="r11" bitsize="32" type="uint32"/>
+  <reg name="r12" bitsize="32" type="uint32"/>
+  <reg name="r13" bitsize="32" type="uint32"/>
+  <reg name="r14" bitsize="32" type="uint32"/>
+  <reg name="r15" bitsize="32" type="uint32"/>
+  <reg name="r16" bitsize="32" type="uint32"/>
+  <reg name="r17" bitsize="32" type="uint32"/>
+  <reg name="r18" bitsize="32" type="uint32"/>
+  <reg name="r19" bitsize="32" type="uint32"/>
+  <reg name="r20" bitsize="32" type="uint32"/>
+  <reg name="r21" bitsize="32" type="uint32"/>
+  <reg name="r22" bitsize="32" type="uint32"/>
+  <reg name="r23" bitsize="32" type="uint32"/>
+  <reg name="r24" bitsize="32" type="uint32"/>
+  <reg name="r25" bitsize="32" type="uint32"/>
+  <reg name="r26" bitsize="32" type="uint32"/>
+  <reg name="r27" bitsize="32" type="uint32"/>
+  <reg name="fp" bitsize="32" type="data_ptr"/>
+  <reg name="gp" bitsize="32" type="data_ptr"/>
+  <reg name="lp" bitsize="32" type="code_ptr"/>
+  <reg name="sp" bitsize="32" type="data_ptr"/>
+  <reg name="pc" bitsize="32" type="code_ptr"/>
+  <reg name="ifc_lp" bitsize="32" type="uint32"/>
+  <reg name="itb" bitsize="32" type="uint32"/>
+  <reg name="ir0" bitsize="32" type="uint32"/>
+  <reg name="lb" bitsize="32" type="uint32"/>
+  <reg name="le" bitsize="32" type="uint32"/>
+  <reg name="lc" bitsize="32" type="uint32"/>
+  <reg name="d0lo" bitsize="32" type="uint32"/>
+  <reg name="d0hi" bitsize="32" type="uint32"/>
+  <reg name="d1lo" bitsize="32" type="uint32"/>
+  <reg name="d1hi" bitsize="32" type="uint32"/>
+  <reg name="ir1" bitsize="32" type="uint32"/>
+  <reg name="ir2" bitsize="32" type="uint32"/>
+  <reg name="ir3" bitsize="32" type="uint32"/>
+  <reg name="ir4" bitsize="32" type="uint32"/>
+  <reg name="ir5" bitsize="32" type="uint32"/>
+  <reg name="ir6" bitsize="32" type="uint32"/>
+  <reg name="ir7" bitsize="32" type="uint32"/>
+  <reg name="ir8" bitsize="32" type="uint32"/>
+  <reg name="ir9" bitsize="32" type="uint32"/>
+  <reg name="ir10" bitsize="32" type="uint32"/>
+  <reg name="ir11" bitsize="32" type="uint32"/>
+  <reg name="ir12" bitsize="32" type="uint32"/>
+  <reg name="ir13" bitsize="32" type="uint32"/>
+  <reg name="ir14" bitsize="32" type="uint32"/>
+  <reg name="ir15" bitsize="32" type="uint32"/>
+  <reg name="ir16" bitsize="32" type="uint32"/>
+  <reg name="ir17" bitsize="32" type="uint32"/>
+  <reg name="ir18" bitsize="32" type="uint32"/>
+  <reg name="ir19" bitsize="32" type="uint32"/>
+  <reg name="ir26" bitsize="32" type="uint32"/>
+  <reg name="ir27" bitsize="32" type="uint32"/>
+  <reg name="ir28" bitsize="32" type="uint32"/>
+  <reg name="ir29" bitsize="32" type="uint32"/>
+  <reg name="cr0" bitsize="32" type="uint32"/>
+  <reg name="cr1" bitsize="32" type="uint32"/>
+  <reg name="cr2" bitsize="32" type="uint32"/>
+  <reg name="cr3" bitsize="32" type="uint32"/>
+  <reg name="cr4" bitsize="32" type="uint32"/>
+  <reg name="cr5" bitsize="32" type="uint32"/>
+  <reg name="cr6" bitsize="32" type="uint32"/>
+  <reg name="cr7" bitsize="32" type="uint32"/>
+  <reg name="mr0" bitsize="32" type="uint32"/>
+  <reg name="mr1" bitsize="32" type="uint32"/>
+  <reg name="mr6" bitsize="32" type="uint32"/>
+  <reg name="mr7" bitsize="32" type="uint32"/>
+  <reg name="mr8" bitsize="32" type="uint32"/>
+  <reg name="mr15" bitsize="32" type="uint32"/>
+</feature>

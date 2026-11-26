@@ -1,0 +1,6 @@
+config NDS32_VIRT
+    bool
+    default y
+    depends on NDS32
+    select SERIAL_MM
+    select SIFIVE_TEST
