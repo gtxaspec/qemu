@@ -9,6 +9,14 @@ config IBEX
 
 # RISC-V machines in alphabetical order
 
+config ATBM6461
+    bool
+    default y
+    depends on RISCV32
+    select ATBM_HERA
+    select SERIAL_MM
+    select SIFIVE_PLIC
+
 config INGENIC_RISCV_CORE
     bool
     default y
