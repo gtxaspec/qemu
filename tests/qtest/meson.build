@@ -361,7 +361,7 @@ qtests_riscv32 = \
   (config_all_devices.has_key('CONFIG_ATBM_HERA') ?
    ['atbm-hera-uart-test', 'atbm-hera-pit-test',
     'atbm-hera-wdt-test', 'atbm-hera-rtc-test',
-    'atbm-hera-gpio-test'] : [])
+    'atbm-hera-gpio-test', 'atbm-hera-smu-test'] : [])
 
 qtests_riscv64 = ['riscv-csr-test'] + \
   (unpack_edk2_blobs ? ['bios-tables-test'] : []) + \
