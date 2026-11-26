@@ -28,7 +28,8 @@
  *
  * Assumptions: the interrupt masks keep the status bit from being set;
  * the burst size has no effect on what is moved; a transfer whose source
- * and destination widths differ moves the narrower unit.
+ * and destination widths differ splits or gathers items (the SDK's flash
+ * write programs a byte-wide SPI port from 32-bit words and counts words).
  *
  * Copyright (C) 2026 Alfonso Gamboa <gtxent@gmail.com>
  *
@@ -131,24 +132,38 @@ static int dmac_step(uint32_t ctrl, uint32_t addr, int w)
     }
 }
 
-/* One unit: read the source, write the destination */
-static bool dmac_unit(AtbmHeraDmacState *s, int n)
+/*
+ * One unit: read a source item, write the destination. SIZE counts source
+ * items: a wider source item goes out as several destination writes, low
+ * byte first, and a wider destination gathers several source items. The
+ * number of source items used is returned, 0 on a bus error.
+ */
+static uint32_t dmac_unit(AtbmHeraDmacState *s, int n)
 {
     DmacChannel *c = &s->ch[n];
     int sw = 1 << extract32(c->ctrl, 20, 2);
     int dw = 1 << extract32(c->ctrl, 18, 2);
-    int w = MIN(sw, dw);
     uint8_t buf[4];
+    uint32_t used = MAX(dw / sw, 1);
 
-    if (address_space_read(&address_space_memory, c->src,
-                           MEMTXATTRS_UNSPECIFIED, buf, w) != MEMTX_OK ||
-        address_space_write(&address_space_memory, c->dst,
-                            MEMTXATTRS_UNSPECIFIED, buf, w) != MEMTX_OK) {
-        return false;
+    used = MIN(used, c->remaining);
+    for (uint32_t i = 0; i < used; i++) {
+        if (address_space_read(&address_space_memory, c->src,
+                               MEMTXATTRS_UNSPECIFIED, buf + i * sw, sw) !=
+            MEMTX_OK) {
+            return 0;
+        }
+        c->src += dmac_step(c->ctrl >> 14, c->src, sw);
     }
-    c->src += dmac_step(c->ctrl >> 14, c->src, sw);
-    c->dst += dmac_step(c->ctrl >> 12, c->dst, dw);
-    return true;
+    for (int off = 0; off < MAX(sw, dw); off += dw) {
+        if (address_space_write(&address_space_memory, c->dst,
+                                MEMTXATTRS_UNSPECIFIED, buf + off, dw) !=
+            MEMTX_OK) {
+            return 0;
+        }
+        c->dst += dmac_step(c->ctrl >> 12, c->dst, dw);
+    }
+    return used;
 }
 
 /* A transfer is complete: its interrupt, then the next descriptor */
@@ -199,12 +214,14 @@ static void dmac_run(AtbmHeraDmacState *s)
                         (dst_hs && !dmac_req(s, extract32(c->ctrl, 4, 4)))) {
                         break;
                     }
-                    if (!dmac_unit(s, n)) {
+                    uint32_t used = dmac_unit(s, n);
+
+                    if (!used) {
                         dmac_status(s, n, ST_ERR(n), C_MASK_ERR);
                         dmac_stop(s, n);
                         break;
                     }
-                    c->remaining--;
+                    c->remaining -= used;
                 }
                 if ((c->ctrl & C_EN) && !c->remaining) {
                     /* a chained descriptor goes round again */
