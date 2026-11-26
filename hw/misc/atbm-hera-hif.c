@@ -65,6 +65,7 @@
 #include "hw/misc/atbm-hera-hif.h"
 #include "migration/vmstate.h"
 #include "system/address-spaces.h"
+#include "trace.h"
 
 #define H_IN_BASE       0x000
 #define H_OUT_BASE      0x100
@@ -268,7 +269,10 @@ static void hif_host_reg_write(AtbmHeraHifState *s, unsigned reg, uint32_t val)
         /* a prefetch is done as soon as it is asked for */
         s->config = val & ~(CFG_AHB_PFETCH | CFG_APB_PFETCH);
         if ((old ^ s->config) & CFG_CPU_RESET) {
-            qemu_set_irq(s->cpu_reset, !!(s->config & CFG_CPU_RESET));
+            bool level = !!(s->config & CFG_CPU_RESET);
+
+            trace_atbm_hera_hif_cpu_reset("host", level);
+            qemu_set_irq(s->cpu_reset, level);
         }
         break;
     case R_CONTROL:
@@ -376,6 +380,7 @@ static void hif_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
 
         s->config = val;
         if ((old ^ val) & CFG_CPU_RESET) {
+            trace_atbm_hera_hif_cpu_reset("chip", !!(val & CFG_CPU_RESET));
             qemu_set_irq(s->cpu_reset, !!(val & CFG_CPU_RESET));
         }
         break;

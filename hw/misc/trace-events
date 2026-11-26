@@ -620,3 +620,4 @@ ms32006_stall(int ch, int64_t pos) "channel %d: stalled at %" PRId64
 # atbm-hera-link.c
 atbm_hera_link_tx(uint32_t type, uint32_t a, uint32_t b, uint32_t c) "to the SoC: type %u a 0x%x b 0x%x c 0x%x"
 atbm_hera_link_rx(uint32_t type, uint32_t a, uint32_t b, uint32_t c) "from the SoC: type %u a 0x%x b 0x%x c 0x%x"
+atbm_hera_hif_cpu_reset(const char *side, int level) "CONFIG[14] cpu reset written from the %s side: %d"
