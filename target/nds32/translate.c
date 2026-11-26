@@ -147,15 +147,32 @@ static void gen_goto_tb(DisasContext *ctx, int n, uint32_t dest)
     }
 }
 
-static bool gen_jump(DisasContext *ctx, uint32_t dest)
+/*
+ * Any taken jump or branch ends an inline function call (the vendor's
+ * simulator does, and the SDK's shared blocks that end in a plain "j"
+ * rely on it); an ifcall itself sets the bit after its jump is chosen
+ */
+static void gen_end_ifc(void)
+{
+    tcg_gen_andi_i32(cpu_psw, cpu_psw, ~PSW_IFCON);
+}
+
+static bool gen_jump_keep_ifc(DisasContext *ctx, uint32_t dest)
 {
     gen_goto_tb(ctx, 0, dest);
     ctx->base.is_jmp = DISAS_NORETURN;
     return true;
 }
 
+static bool gen_jump(DisasContext *ctx, uint32_t dest)
+{
+    gen_end_ifc();
+    return gen_jump_keep_ifc(ctx, dest);
+}
+
 static bool gen_jump_reg(DisasContext *ctx, TCGv_i32 target)
 {
+    gen_end_ifc();
     tcg_gen_mov_i32(cpu_pc, target);
     tcg_gen_lookup_and_goto_ptr();
     ctx->base.is_jmp = DISAS_NORETURN;
@@ -170,6 +187,7 @@ static bool gen_bcond(DisasContext *ctx, TCGCond cond, TCGv_i32 a, TCGv_i32 b,
     tcg_gen_brcond_i32(cond, a, b, taken);
     gen_goto_tb(ctx, 0, next_pc(ctx));
     gen_set_label(taken);
+    gen_end_ifc();
     gen_goto_tb(ctx, 1, cur_pc(ctx) + off);
     ctx->base.is_jmp = DISAS_NORETURN;
     return true;
@@ -183,6 +201,7 @@ static bool gen_bcondi(DisasContext *ctx, TCGCond cond, TCGv_i32 a, int32_t b,
     tcg_gen_brcondi_i32(cond, a, b, taken);
     gen_goto_tb(ctx, 0, next_pc(ctx));
     gen_set_label(taken);
+    gen_end_ifc();
     gen_goto_tb(ctx, 1, cur_pc(ctx) + off);
     ctx->base.is_jmp = DISAS_NORETURN;
     return true;
@@ -1221,9 +1240,24 @@ static bool trans_j(DisasContext *ctx, arg_j *a)
     return gen_jump(ctx, cur_pc(ctx) + (a->imm << 1));
 }
 
+/*
+ * A jal or jral reached through an ifcall returns to the ifcall's
+ * successor ($ifc_lp) and ends the inline call: the SDK's code shares one
+ * "jal f" behind many 2-byte ifcall9 sites and relies on it
+ */
+static void gen_link(DisasContext *ctx, TCGv_i32 link)
+{
+    TCGv_i32 on = tcg_temp_new_i32();
+
+    tcg_gen_andi_i32(on, cpu_psw, PSW_IFCON);
+    tcg_gen_movcond_i32(TCG_COND_NE, link, on, tcg_constant_i32(0),
+                        cpu_ifc_lp, tcg_constant_i32(next_pc(ctx)));
+    tcg_gen_andi_i32(cpu_psw, cpu_psw, ~PSW_IFCON);
+}
+
 static bool trans_jal(DisasContext *ctx, arg_j *a)
 {
-    tcg_gen_movi_i32(cpu_gpr[30], next_pc(ctx));
+    gen_link(ctx, cpu_gpr[30]);
     return gen_jump(ctx, cur_pc(ctx) + (a->imm << 1));
 }
 
@@ -1248,7 +1282,7 @@ static bool trans_jral(DisasContext *ctx, arg_jreg *a)
     TCGv_i32 target = tcg_temp_new_i32();
 
     tcg_gen_mov_i32(target, cpu_gpr[a->rb]);
-    tcg_gen_movi_i32(cpu_gpr[a->rt], next_pc(ctx));
+    gen_link(ctx, cpu_gpr[a->rt]);
     return gen_jump_reg(ctx, target);
 }
 
@@ -1355,7 +1389,7 @@ static bool gen_ifcall(DisasContext *ctx, uint32_t dest)
     tcg_gen_movcond_i32(TCG_COND_EQ, cpu_ifc_lp, on, tcg_constant_i32(0),
                         tcg_constant_i32(next_pc(ctx)), cpu_ifc_lp);
     tcg_gen_ori_i32(cpu_psw, cpu_psw, PSW_IFCON);
-    return gen_jump(ctx, dest);
+    return gen_jump_keep_ifc(ctx, dest);
 }
 
 static bool trans_ifcall(DisasContext *ctx, arg_brr *a)
@@ -1929,7 +1963,7 @@ static bool trans_jral5(DisasContext *ctx, arg_hra *a)
     TCGv_i32 target = tcg_temp_new_i32();
 
     tcg_gen_mov_i32(target, cpu_gpr[a->ra]);
-    tcg_gen_movi_i32(cpu_gpr[30], next_pc(ctx));
+    gen_link(ctx, cpu_gpr[30]);
     return gen_jump_reg(ctx, target);
 }
 
