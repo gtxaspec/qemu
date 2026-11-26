@@ -40,6 +40,7 @@
 #include "hw/core/irq.h"
 #include "migration/vmstate.h"
 #include "system/watchdog.h"
+#include "trace.h"
 
 #define TYPE_ATBM_HERA_WDT "atbm-hera-wdt"
 OBJECT_DECLARE_SIMPLE_TYPE(AtbmHeraWdtState, ATBM_HERA_WDT)
@@ -126,6 +127,7 @@ static void wdt_update_irq(AtbmHeraWdtState *s)
 static void wdt_restart(AtbmHeraWdtState *s)
 {
     s->stage = STAGE_INT;
+    trace_atbm_hera_wdt_restart(s->ctrl & CTRL_EN);
     if (s->ctrl & CTRL_EN) {
         timer_mod(s->timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
                             wdt_stage_ns(s, STAGE_INT));
@@ -139,6 +141,7 @@ static void wdt_expire(void *opaque)
     AtbmHeraWdtState *s = opaque;
     int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
 
+    trace_atbm_hera_wdt_expire(s->stage, s->ctrl);
     switch (s->stage) {
     case STAGE_INT:
         s->st |= ST_INTZERO;
@@ -223,6 +226,9 @@ static void wdt_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
         qemu_log_mask(LOG_UNIMP, "atbm-hera-wdt: write 0x%" PRIx64
                       " at 0x%" HWADDR_PRIx "\n", val, addr);
         return;
+    }
+    if (addr != WDT_RESTART) {
+        trace_atbm_hera_wdt_write(addr, val);
     }
     switch (addr) {
     case WDT_CTRL:

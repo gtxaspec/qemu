@@ -51,3 +51,8 @@ sbsa_gwdt_control_write(uint64_t addr, uint64_t value) "[0x%" PRIx64 "] <- 0x%" 
 sbsa_gwdt_ws0_asserted(void) "WS0 signal is asserted"
 sbsa_gwdt_ws1_asserted(void) "WS1 signal is asserted"
 sbsa_gwdt_reset(void) "reset watchdog to default state"
+
+# atbm-hera-wdt.c
+atbm_hera_wdt_restart(bool enabled) "enabled %d"
+atbm_hera_wdt_expire(int stage, uint32_t ctrl) "stage %d (0 interrupt, 1 CPU reset, 2 all reset) ctrl 0x%x"
+atbm_hera_wdt_write(uint64_t addr, uint64_t val) "0x%" PRIx64 " <- 0x%" PRIx64
