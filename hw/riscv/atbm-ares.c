@@ -463,6 +463,31 @@ static void ares_ctl(void *opaque, int n, int level)
     }
 }
 
+/*
+ * What the machine itself holds, beside the devices (which reset on their
+ * own): the registers not modelled yet, the SMU overlay's counter and
+ * the software interrupts, and the memories, which come up as on a cold
+ * start (a run's leftovers in the MAC's descriptor memory or the
+ * firmware's own data made the next boot assert)
+ */
+static void ares_reset(void *opaque)
+{
+    Atbm6461State *s = opaque;
+    MemoryRegion *ram[] = { &s->itcm, &s->dtcm, &s->mac_a, &s->mac_b,
+                            &s->mac_c, &s->sram };
+
+    g_hash_table_remove_all(s->regs);
+    s->cnt_start = 0;
+    s->plicsw_pend = s->plicsw_en = 0;
+    s->uart_lvl = 0;
+    qemu_set_irq(s->plicsw_irq, 0);
+    qemu_set_irq(s->yield_irq, 0);
+    for (int i = 0; i < ARRAY_SIZE(ram); i++) {
+        address_space_set(&address_space_memory, ram[i]->addr, 0,
+                          memory_region_size(ram[i]), MEMTXATTRS_UNSPECIFIED);
+    }
+}
+
 static void ares_uart_irq(void *opaque, int n, int level)
 {
     Atbm6461State *s = opaque;
@@ -626,6 +651,8 @@ static void ares_init(MachineState *machine)
     dev = ares_dev(s, "atbm-hera-pit", "pit3", 0x17000000, -1, NULL);
     sysbus_connect_irq(SYS_BUS_DEVICE(dev), 0, qdev_get_gpio_in(pit_or, 2));
     ares_dev(s, "atbm-hera-efuse", "efuse", 0x16b00000, -1, NULL);
+    /* the 6441's cipher and hash engine; the firmware polls its hash status */
+    ares_dev(s, "atbm-hera-crypto", "crypto", 0x17200000, -1, NULL);
     dmac = ares_dev(s, "atbm-hera-dmac", "dmac", 0x14000000, 7, NULL);
     /*
      * The bootloader and the firmware both set request number 0 for the
@@ -667,6 +694,7 @@ static void ares_init(MachineState *machine)
     memory_region_add_subregion(sys, PLICSW_BASE, &s->plicsw);
     s->plicsw_irq = qdev_get_gpio_in(DEVICE(qemu_get_cpu(0)), IRQ_M_SOFT);
     ares_load_rom(s);
+    qemu_register_reset(ares_reset, s);
 }
 
 static void ares_class_init(ObjectClass *oc, const void *data)

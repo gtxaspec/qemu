@@ -114,6 +114,29 @@ static void test_reboot_pads(void)
     unlink(flash);
 }
 
+/* A reset starts from a cold boot's state: memories, registers, the HIF */
+static void test_reset_state(void)
+{
+    g_autofree char *flash = make_flash();
+    QTestState *qts = start(flash, "-serial null -serial null");
+
+    qtest_writel(qts, 0x09000100, 0x12345678);          /* SRAM */
+    qtest_writel(qts, 0x00800040, 0x9abcdef0);          /* DTCM */
+    qtest_writel(qts, 0x18100438, 0x0a0b0c0d);          /* MAC descriptors */
+    qtest_writel(qts, 0x0a500b00, 0x55aa55aa);          /* a MAC register */
+    qtest_writel(qts, 0x0ab00134, 0x00030000);          /* HIF CONFIG */
+
+    qtest_qmp_assert_success(qts, "{'execute': 'system_reset'}");
+    qtest_qmp_eventwait(qts, "RESET");
+    g_assert_cmphex(qtest_readl(qts, 0x09000100), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, 0x00800040), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, 0x18100438), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, 0x0a500b00), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, 0x0ab00134), ==, 0);
+    qtest_quit(qts);
+    unlink(flash);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -121,6 +144,7 @@ int main(int argc, char **argv)
     qtest_add_func("/atbm6461/smu/yield", test_yield);
     qtest_add_func("/atbm6461/smu/uart-rx-bits", test_rx_bits);
     qtest_add_func("/atbm6461/pads/reboot", test_reboot_pads);
+    qtest_add_func("/atbm6461/reset/state", test_reset_state);
 
     return g_test_run();
 }
