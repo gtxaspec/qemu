@@ -143,6 +143,8 @@ struct AtbmHeraMachine {
     DeviceState *nmi_or;
     AtbmHeraNorState *nor;
     uint32_t entry;
+    uint32_t held;
+    qemu_irq *ctl;
     uint64_t hif_port;
     bool wire_cpu;
 };
@@ -289,15 +291,52 @@ static void atbm_hera_wire_cpu(AtbmHeraMachine *m)
 }
 
 /* The CPU's reset puts its program counter at the ELF's entry */
+static void atbm_hera_cpu_restart(AtbmHeraMachine *m)
+{
+    cpu_reset(m->cpu);
+    if (m->entry) {
+        cpu_set_pc(m->cpu, m->entry);
+    }
+}
+
 static void atbm_hera_cpu_reset(void *opaque)
 {
     AtbmHeraMachine *m = opaque;
 
     if (m->cpu) {
-        cpu_reset(m->cpu);
-        if (m->entry) {
-            cpu_set_pc(m->cpu, m->entry);
+        if (m->held) {
+            m->held = 0;
+            cpu_resume(m->cpu);
         }
+        atbm_hera_cpu_restart(m);
+    }
+}
+
+/*
+ * Lines into the core: 0 the SMU's CPU_CTRL hold bit and 1 the SDIO
+ * host's reset (HIF CONFIG[14]) keep it in reset while high and restart
+ * it from the entry when released; 2 is the watchdogs' reset stage, a
+ * restart. No ROM runs after a restart: the stand-in is the entry point.
+ */
+
+static void atbm_hera_ctl(void *opaque, int n, int level)
+{
+    AtbmHeraMachine *m = opaque;
+    uint32_t was = m->held;
+
+    if (n == 2) {
+        if (level && !was) {
+            atbm_hera_cpu_restart(m);
+        }
+        return;
+    }
+    m->held = deposit32(m->held, n, 1, !!level);
+    if (!was && m->held) {
+        cpu_pause(m->cpu);
+        cpu_reset(m->cpu);
+    } else if (was && !m->held) {
+        atbm_hera_cpu_restart(m);
+        cpu_resume(m->cpu);
     }
 }
 
@@ -415,12 +454,15 @@ static void atbm_hera_init(MachineState *machine)
                                 qdev_get_gpio_in_named(dmac, "req", 8));
     qdev_connect_gpio_out_named(dev, "dreq-rx", 0,
                                 qdev_get_gpio_in_named(dmac, "req", 9));
+    m->ctl = qemu_allocate_irqs(atbm_hera_ctl, m, 3);
     dev = atbm_hera_dev(m, "atbm-hera-hif", "hif", 0x0ab00000, 10, NULL);
+    qdev_connect_gpio_out_named(dev, "cpu-reset", 0, m->ctl[1]);
     if (m->hif_port) {
         sysbus_mmio_map(SYS_BUS_DEVICE(dev), 1, m->hif_port);
     }
     atbm_hera_dev(m, "atbm-hera-i2c", "i2c", 0x16900000, 22, NULL);
     dev = atbm_hera_dev(m, "atbm-hera-smu", "smu", 0x16100000, 28, NULL);
+    qdev_connect_gpio_out_named(dev, "cpu-hold", 0, m->ctl[0]);
     atbm_hera_connect(m, dev, 1, 30);
     dev = atbm_hera_dev(m, "atbm-hera-gpio", "gpio", 0x16800000, 23, NULL);
     sysbus_mmio_map(SYS_BUS_DEVICE(dev), 1, 0x17400000);
@@ -432,8 +474,10 @@ static void atbm_hera_init(MachineState *machine)
     m->nmi_or = atbm_hera_or(m, "nmi-or", 2, NMI_IN);
     dev = atbm_hera_dev(m, "atbm-hera-wdt", "wdt1", 0x16600000, -1, NULL);
     sysbus_connect_irq(SYS_BUS_DEVICE(dev), 0, qdev_get_gpio_in(m->nmi_or, 0));
+    qdev_connect_gpio_out_named(dev, "cpu-reset", 0, m->ctl[2]);
     dev = atbm_hera_dev(m, "atbm-hera-wdt", "wdt2", 0x17500000, -1, NULL);
     sysbus_connect_irq(SYS_BUS_DEVICE(dev), 0, qdev_get_gpio_in(m->nmi_or, 1));
+    qdev_connect_gpio_out_named(dev, "cpu-reset", 0, m->ctl[2]);
 
     /*
      * The Wi-Fi MAC and PHY: undocumented, out of scope here (a shim at
