@@ -99,12 +99,12 @@ static void test_memory_map(void)
     qtest_writel(qts, HERA_ROM, 0x55555555);
     g_assert_cmphex(qtest_readl(qts, HERA_ROM), ==, 0);
 
-    /* an erased flash in both windows; the MAC and PHY read 0 */
+    /* an erased flash in both windows; the MAC reads 0, the PHY the version */
     g_assert_cmphex(qtest_readl(qts, HERA_FLASH), ==, 0xffffffff);
     g_assert_cmphex(qtest_readl(qts, HERA_FLASH_NC + 0x1ffffc), ==,
                     0xffffffff);
     g_assert_cmphex(qtest_readl(qts, 0x0a500000), ==, 0);
-    g_assert_cmphex(qtest_readl(qts, 0x0acc017c), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, 0x0acc017c), ==, 0x64);
     qtest_quit(qts);
 }
 

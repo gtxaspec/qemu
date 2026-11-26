@@ -218,6 +218,7 @@ static void test_flash_read_dma(void)
     uint32_t w;
 
     /* erased flash reads 0xff; put a pattern at 0x1000 by PIO first */
+    qtest_writel(qts, HERA_SPI1 + SPI_IFSET, (2 << 16) | (7 << 8) | BIT(7));
     qtest_writel(qts, HERA_SPI1 + SPI_CTRL, 0x6);
     qtest_writel(qts, HERA_SPI1 + SPI_TRANSCTRL, TC_CMD | TC_MODE(7));
     qtest_writel(qts, HERA_SPI1 + SPI_CMD, 0x06);
