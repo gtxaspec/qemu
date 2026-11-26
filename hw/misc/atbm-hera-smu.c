@@ -78,7 +78,39 @@ struct AtbmHeraSmuState {
     uint32_t adc_code;
     uint32_t reg[SMU_REGS];
     uint16_t wake_pins;
+    uint32_t logged[SMU_REGS / 32];
 };
+
+/*
+ * The offsets the SDK's code and the firmware touch (pwr.h and the
+ * accesses in the shipped firmware); anything else is logged once
+ */
+static const struct { uint16_t lo, hi; } smu_known[] = {
+    { 0x008, 0x008 }, { 0x010, 0x024 }, { 0x038, 0x044 }, { 0x060, 0x064 },
+    { 0x074, 0x098 }, { 0x0a0, 0x0d4 }, { 0x0e0, 0x0e8 }, { 0x13c, 0x140 },
+    { 0x1a0, 0x1a0 }, { 0x1c0, 0x1c0 }, { 0x1d8, 0x1d8 }, { 0x1ec, 0x1ec },
+    { 0x258, 0x258 }, { 0x400, 0x400 }, { 0x1000, 0x1034 },
+    { 0x105c, 0x1060 }, { 0x1070, 0x1070 }, { 0x1084, 0x1094 },
+    { 0x10a4, 0x10b4 }, { 0x10bc, 0x10bc }, { 0x10d0, 0x10d0 },
+    { 0x10e0, 0x10e8 }, { 0x10fc, 0x1104 }, { 0x1400, 0x1418 },
+    { 0x140c, 0x140c }, { 0x1800, 0x1aff },
+};
+
+static void smu_check_known(AtbmHeraSmuState *s, hwaddr addr, bool is_write)
+{
+    if (s->logged[addr / 4 / 32] & BIT((addr / 4) % 32)) {
+        return;
+    }
+    s->logged[addr / 4 / 32] |= BIT((addr / 4) % 32);
+    for (int i = 0; i < ARRAY_SIZE(smu_known); i++) {
+        if (addr >= smu_known[i].lo && addr <= smu_known[i].hi) {
+            return;
+        }
+    }
+    qemu_log_mask(LOG_UNIMP, "atbm-hera-smu: %s at 0x%" HWADDR_PRIx
+                  " (nothing is known of it; it reads back what was "
+                  "written)\n", is_write ? "write" : "read", addr);
+}
 
 static uint16_t smu_wake_status(AtbmHeraSmuState *s)
 {
@@ -139,7 +171,10 @@ static void smu_write_word(AtbmHeraSmuState *s, hwaddr addr, uint32_t val)
 /* the firmware also reads and writes bytes and halves of the registers */
 static uint64_t smu_read(void *opaque, hwaddr addr, unsigned size)
 {
-    uint32_t val = smu_read_word(opaque, addr & ~3);
+    uint32_t val;
+
+    smu_check_known(opaque, addr & ~3, false);
+    val = smu_read_word(opaque, addr & ~3);
 
     return (val >> ((addr & 3) * 8)) & MAKE_64BIT_MASK(0, size * 8);
 }
@@ -150,6 +185,7 @@ static void smu_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
     unsigned shift = (addr & 3) * 8;
     uint32_t mask = MAKE_64BIT_MASK(shift, size * 8);
 
+    smu_check_known(s, addr & ~3, true);
     if (size < 4) {
         val = (smu_read_word(s, addr & ~3) & ~mask) | ((val << shift) & mask);
     }

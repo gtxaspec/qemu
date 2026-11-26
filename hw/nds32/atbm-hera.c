@@ -5,9 +5,9 @@
  * target/nds32. Until that is in, the machine is built for every target
  * and has no CPU; it keeps its devices, memories and interrupt lines, so
  * a qtest drives them through MMIO (qtest needs a CPU to have an address
- * space: any "-cpu" will do, its lines unwired). With "-cpu" and
- * -machine wire-cpu=on the CPU's interrupt inputs 0..31 are wired to the
- * chip's interrupt numbers.
+ * space: any "-cpu" will do, its lines unwired). A CPU with the named
+ * inputs "IRQ" (0..31) and "NMI" (the nds32 core's) gets the chip's
+ * interrupt numbers wired to them, unless -machine wire-cpu=off.
  *
  * Memory (from the SDK's linker scripts and config headers):
  *   0x00030000 ILM, 64 KiB     code the bootloader copies from flash
@@ -46,6 +46,7 @@
 #include "hw/core/sysbus.h"
 #include "hw/ssi/ssi.h"
 #include "system/blockdev.h"
+#include "system/reset.h"
 #include "system/block-backend.h"
 #include "hw/misc/unimp.h"
 #include "system/address-spaces.h"
@@ -132,6 +133,7 @@ struct AtbmHeraMachine {
     MemoryRegion rom;
     MemoryRegion dtcm;
     MemoryRegion sram;
+    CPUState *cpu;
     MemoryRegion flash_cached;
     MemoryRegion flash_uncached;
     AtbmHeraIntSink *ints;
@@ -246,12 +248,59 @@ static void atbm_hera_load_elf(AtbmHeraMachine *m, const char *filename)
     }
 }
 
+/* A named gpio list of the device, with at least n inputs */
+static bool atbm_hera_has_in(DeviceState *dev, const char *name, int n)
+{
+    NamedGPIOList *ngl;
+
+    QLIST_FOREACH(ngl, &dev->gpios, node) {
+        if (!g_strcmp0(ngl->name, name)) {
+            return ngl->num_in >= n;
+        }
+    }
+    return false;
+}
+
+/*
+ * Chip interrupt n is the CPU's "IRQ" input n and the watchdogs' NMI its
+ * "NMI" input, for a CPU that has them (the nds32 one does); another
+ * target's CPU, as the qtests use, is left alone
+ */
+static void atbm_hera_wire_cpu(AtbmHeraMachine *m)
+{
+    DeviceState *cpu = DEVICE(m->cpu);
+
+    if (!m->wire_cpu || !atbm_hera_has_in(cpu, "IRQ", N_INTS)) {
+        return;
+    }
+    for (int i = 0; i < N_INTS; i++) {
+        qdev_connect_gpio_out_named(DEVICE(m->ints), "int", i,
+                                    qdev_get_gpio_in_named(cpu, "IRQ", i));
+    }
+    if (atbm_hera_has_in(cpu, "NMI", 1)) {
+        qdev_connect_gpio_out_named(DEVICE(m->ints), "nmi", 0,
+                                    qdev_get_gpio_in_named(cpu, "NMI", 0));
+    }
+}
+
+/* The CPU's reset puts its program counter at the ELF's entry */
+static void atbm_hera_cpu_reset(void *opaque)
+{
+    AtbmHeraMachine *m = opaque;
+
+    if (m->cpu) {
+        cpu_reset(m->cpu);
+        if (m->entry) {
+            cpu_set_pc(m->cpu, m->entry);
+        }
+    }
+}
+
 static void atbm_hera_init(MachineState *machine)
 {
     AtbmHeraMachine *m = ATBM_HERA_MACHINE(machine);
     MemoryRegion *sysmem = get_system_memory();
     Chardev *chr0 = serial_hd(0), *chr1 = serial_hd(1);
-    CPUState *cpu = NULL;
     DeviceState *dev;
     DriveInfo *dinfo = drive_get(IF_MTD, 0, 0);
     DeviceState *spi1, *dmac;
@@ -380,18 +429,13 @@ static void atbm_hera_init(MachineState *machine)
     create_unimplemented_device("atbm-hera.wgt", 0x0ad00000, 0x100000);
 
     if (machine->cpu_type) {
-        cpu = CPU(cpu_create(machine->cpu_type));
-        for (int i = 0; m->wire_cpu && i < N_INTS; i++) {
-            qdev_connect_gpio_out_named(DEVICE(m->ints), "int", i,
-                                        qdev_get_gpio_in(DEVICE(cpu), i));
-        }
+        m->cpu = CPU(cpu_create(machine->cpu_type));
+        atbm_hera_wire_cpu(m);
     }
     if (machine->kernel_filename) {
         atbm_hera_load_elf(m, machine->kernel_filename);
-        if (cpu) {
-            cpu_set_pc(cpu, m->entry);
-        }
     }
+    qemu_register_reset(atbm_hera_cpu_reset, m);
 }
 
 static bool atbm_hera_get_wire(Object *obj, Error **errp)
@@ -408,6 +452,7 @@ static void atbm_hera_instance_init(Object *obj)
 {
     AtbmHeraMachine *m = ATBM_HERA_MACHINE(obj);
 
+    m->wire_cpu = true;
     object_property_add_uint64_ptr(obj, "hif-host-port", &m->hif_port,
                                    OBJ_PROP_FLAG_READWRITE);
     object_property_set_description(obj, "hif-host-port",
