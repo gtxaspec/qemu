@@ -271,6 +271,13 @@ static bool trans_exec_it(DisasContext *ctx, uint32_t opcode)
                            extract32(insn, 31, 1) << 20;
         target_ulong target = (ctx->base.pc_next & ~0x1fffffu) | imm;
 
+        /* the ROM library at 0x60000 reads as zero and cannot run */
+        if (target >= 0x60000 && target < 0x70000) {
+            qemu_log_mask(LOG_UNIMP, "exec.it at 0x%" PRIx64
+                          ": ROM target 0x%" PRIx64 "\n",
+                          (uint64_t)ctx->base.pc_next, (uint64_t)target);
+        }
+
         gen_jal(ctx, extract32(insn, 7, 5), target - ctx->base.pc_next);
         return true;
     }

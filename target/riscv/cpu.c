@@ -3654,6 +3654,8 @@ static const TypeInfo riscv_cpu_type_infos[] = {
         .cfg.ext_zifencei = true,
         .cfg.ext_zicsr = true,
         .cfg.ext_xandesperf = true,
+        /* the firmware loads and stores at any alignment */
+        .cfg.ext_zicclsm = true,
         .cfg.pmp = true,
 #if defined(CONFIG_TCG) && !defined(CONFIG_USER_ONLY)
         .custom_csrs = andes_csr_list,
