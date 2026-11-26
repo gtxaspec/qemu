@@ -78,19 +78,25 @@ OBJECT_DECLARE_SIMPLE_TYPE(Atbm6461State, ATBM6461_MACHINE)
 #define MAC_BASE        0x0a000000
 #define MAC_SIZE        0x01000000
 
+typedef struct PeriphWin {
+    Atbm6461State *s;
+    hwaddr base;
+} PeriphWin;
+
 struct Atbm6461State {
     MachineState parent_obj;
 
     RISCVHartArrayState cpus;
-    MemoryRegion itcm, dtcm, sram, rom, flash;
+    MemoryRegion itcm, dtcm, sram, mac_a, mac_b, rom, flash;
     MemoryRegion flash_nocache, flash_cached, flash_image;
     MemoryRegion periph, mac, sys1;
+    PeriphWin pwin[2];
     GHashTable *regs;
     AtbmHeraNorState *nor;
     DeviceState *smu;
     int64_t cnt_start;
     MemoryRegion plicsw;
-    qemu_irq plicsw_irq;
+    qemu_irq plicsw_irq, yield_irq;
     uint32_t plicsw_pend, plicsw_en;
     DeviceState *plic;
 };
@@ -100,24 +106,57 @@ struct Atbm6461State {
  * written (else 0), and each access is logged, so what the firmware waits
  * on shows in -d unimp.
  */
+/*
+ * Bits of the unmodelled registers the firmware polls, forced on: what the
+ * MAC does to set them is not known, so they read as set
+ */
+static const struct {
+    hwaddr addr;
+    uint32_t set;
+} mac_ready[] = {
+    { 0x0a500a20, 0x80000000 },     /* the LMAC init waits for bit 31 */
+    { 0x0ac3899c, 0x1 },            /* the TX calibration's done flag */
+};
+
+/* and bits it waits to see clear */
+static const struct {
+    hwaddr addr;
+    uint32_t clr;
+} mac_clear[] = {
+    { 0x0a560884, 0x1 },            /* PAS_FlushEbmTxRequest's WaitClr */
+    { 0x0a500a48, 0x80 },           /* WaitImStop */
+};
+
 static uint64_t periph_read(void *opaque, hwaddr addr, unsigned size)
 {
-    Atbm6461State *s = opaque;
-    gpointer v = g_hash_table_lookup(s->regs, GUINT_TO_POINTER(addr));
+    PeriphWin *w = opaque;
+    uint32_t v = GPOINTER_TO_UINT(g_hash_table_lookup(w->s->regs,
+                                  GUINT_TO_POINTER(w->base + addr)));
+    int i;
 
+    for (i = 0; i < ARRAY_SIZE(mac_ready); i++) {
+        if (mac_ready[i].addr == w->base + (addr & ~3)) {
+            v |= mac_ready[i].set;
+        }
+    }
+    for (i = 0; i < ARRAY_SIZE(mac_clear); i++) {
+        if (mac_clear[i].addr == w->base + (addr & ~3)) {
+            v &= ~mac_clear[i].clr;
+        }
+    }
     qemu_log_mask(LOG_UNIMP, "atbm6461: read  0x%08" HWADDR_PRIx " -> 0x%x\n",
-                  PERIPH_BASE + addr, GPOINTER_TO_UINT(v));
-    return GPOINTER_TO_UINT(v);
+                  w->base + addr, v);
+    return v;
 }
 
 static void periph_write(void *opaque, hwaddr addr, uint64_t val,
                          unsigned size)
 {
-    Atbm6461State *s = opaque;
+    PeriphWin *w = opaque;
 
     qemu_log_mask(LOG_UNIMP, "atbm6461: write 0x%08" HWADDR_PRIx " <- 0x%"
-                  PRIx64 "\n", PERIPH_BASE + addr, val);
-    g_hash_table_insert(s->regs, GUINT_TO_POINTER(addr),
+                  PRIx64 "\n", w->base + addr, val);
+    g_hash_table_insert(w->s->regs, GUINT_TO_POINTER(w->base + addr),
                         GUINT_TO_POINTER((uint32_t)val));
 }
 
@@ -139,6 +178,7 @@ static const struct {
     uint32_t set;
 } sys_ready[] = {
     { 0x188, 0x2 },     /* polled until bit 1 after bit 31 is set */
+    { 0x098, 0x2 },     /* the second calibration's done bit */
     { 0x094, 0x3070 },  /* the sleep clock calibration's result, as logged */
 };
 
@@ -172,6 +212,10 @@ static void sys_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
 {
     Atbm6461State *s = opaque;
 
+    if ((addr & ~3) == 0xc) {
+        /* bit 0 asks for the RTOS's yield, interrupt 27, until it is cleared */
+        qemu_set_irq(s->yield_irq, val & 1);
+    }
     if ((addr & ~3) == 0x10f4 && (val & 1)) {
         s->cnt_start = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
     }
@@ -244,6 +288,9 @@ static uint64_t plicsw_read(void *opaque, hwaddr addr, unsigned size)
     Atbm6461State *s = opaque;
     uint32_t v = 0;
 
+    qemu_log_mask(LOG_UNIMP, "atbm6461: plicsw read 0x%" HWADDR_PRIx
+                  " (pend 0x%x en 0x%x)\n", addr, s->plicsw_pend,
+                  s->plicsw_en);
     switch (addr) {
     case 0x1000:
         return s->plicsw_pend;
@@ -264,6 +311,8 @@ static void plicsw_write(void *opaque, hwaddr addr, uint64_t val,
 {
     Atbm6461State *s = opaque;
 
+    qemu_log_mask(LOG_UNIMP, "atbm6461: plicsw write 0x%" HWADDR_PRIx
+                  " <- 0x%" PRIx64 "\n", addr, val);
     switch (addr) {
     case 0x1000:
         s->plicsw_pend |= val;
@@ -307,17 +356,30 @@ static void ares_init(MachineState *machine)
     memory_region_init_ram(&s->dtcm, NULL, "atbm6461.dtcm",
                            DTCM_SIZE, &error_fatal);
     memory_region_add_subregion(sys, DTCM_BASE, &s->dtcm);
+    /*
+     * The LMAC's code and data memories: the firmware copies images from
+     * its flash into 0x20060000 (96 KiB) and 0x20800000 (32 KiB); the real
+     * sizes of the windows are not known
+     */
+    memory_region_init_ram(&s->mac_a, NULL, "atbm6461.mac-ram-a", 1 * MiB,
+                           &error_fatal);
+    memory_region_add_subregion(sys, 0x20000000, &s->mac_a);
+    memory_region_init_ram(&s->mac_b, NULL, "atbm6461.mac-ram-b", 1 * MiB,
+                           &error_fatal);
+    memory_region_add_subregion(sys, 0x20800000, &s->mac_b);
     memory_region_init_ram(&s->sram, NULL, "atbm6461.sram", SRAM_SIZE,
                            &error_fatal);
     memory_region_add_subregion(sys, SRAM_BASE, &s->sram);
 
-    memory_region_init_io(&s->periph, NULL, &periph_ops, s,
+    memory_region_init_io(&s->periph, NULL, &periph_ops, &s->pwin[0],
                           "atbm6461.periph", PERIPH_SIZE);
     memory_region_add_subregion_overlap(sys, PERIPH_BASE, &s->periph, -1);
-    memory_region_init_io(&s->mac, NULL, &periph_ops, s, "atbm6461.mac",
-                          MAC_SIZE);
+    memory_region_init_io(&s->mac, NULL, &periph_ops, &s->pwin[1],
+                          "atbm6461.mac", MAC_SIZE);
     memory_region_add_subregion_overlap(sys, MAC_BASE, &s->mac, -1);
     s->regs = g_hash_table_new(g_direct_hash, g_direct_equal);
+    s->pwin[0] = (PeriphWin){ s, PERIPH_BASE };
+    s->pwin[1] = (PeriphWin){ s, MAC_BASE };
 
     s->plic = sifive_plic_create(sys, PLIC_BASE, (char *)"M", 1, 0, 64, 7,
                                  0x0, 0x1000, 0x2000, 0x80, 0x200000, 0x1000,
@@ -390,6 +452,7 @@ static void ares_init(MachineState *machine)
                                 qdev_get_gpio_in(dreq_or, 1));
     dev = ares_dev(s, "atbm-hera-smu", "smu", 0x16100000, 28, NULL);
     s->smu = dev;
+    s->yield_irq = qdev_get_gpio_in(s->plic, 27);
     memory_region_init_io(&s->sys1, NULL, &sys_ops, s, "atbm6461.sys", 0x2000);
     memory_region_add_subregion_overlap(sys, 0x16100000, &s->sys1, 1);
     ares_connect(s, dev, 1, 30);
