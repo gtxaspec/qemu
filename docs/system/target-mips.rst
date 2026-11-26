@@ -204,6 +204,12 @@ watchdog's last stage), and ``on-chip-reset`` says what the card does:
 ``soc-reset``
    the whole camera resets and boots again, as the real board does
 
+A chip that reboots again and again starts each time as from power-on,
+but for its flash, which keeps what the firmware writes: the 6461's
+saves its configuration there and then runs another way, which ends in a
+crash without the BLE core. ``-global atbm-hera-nor.restore-on-reset=on``
+puts the flash back as it was loaded at every reset.
+
 The chip's first word after it starts is not acted on in any mode. A
 camera or a chip of an older build ignores or is not sent the message
 (it is sent only to a card that says in its hello that it takes it).
