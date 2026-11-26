@@ -38,6 +38,7 @@
 #include "hw/core/boards.h"
 #include "hw/core/cpu.h"
 #include "hw/core/irq.h"
+#include "hw/core/or-irq.h"
 #include "hw/core/loader.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/sysbus.h"
@@ -120,6 +121,8 @@ struct AtbmHeraMachine {
     MemoryRegion flash_cached;
     MemoryRegion flash_uncached;
     AtbmHeraIntSink *ints;
+    /* the interrupt numbers that two sources share, through an OR */
+    DeviceState *pit_or;
     uint32_t entry;
     bool wire_cpu;
 };
@@ -129,6 +132,18 @@ static void atbm_hera_connect(AtbmHeraMachine *m, DeviceState *dev, int n,
 {
     sysbus_connect_irq(SYS_BUS_DEVICE(dev), n,
                        qdev_get_gpio_in(DEVICE(m->ints), irq));
+}
+
+static DeviceState *atbm_hera_or(AtbmHeraMachine *m, const char *name,
+                                 int n, int irq)
+{
+    DeviceState *or = qdev_new(TYPE_OR_IRQ);
+
+    object_property_add_child(OBJECT(m), name, OBJECT(or));
+    qdev_prop_set_uint16(or, "num-lines", n);
+    qdev_realize_and_unref(or, NULL, &error_fatal);
+    qdev_connect_gpio_out(or, 0, qdev_get_gpio_in(DEVICE(m->ints), irq));
+    return or;
 }
 
 static DeviceState *atbm_hera_dev(AtbmHeraMachine *m, const char *type,
@@ -220,6 +235,7 @@ static void atbm_hera_init(MachineState *machine)
     MemoryRegion *sysmem = get_system_memory();
     Chardev *chr0 = serial_hd(0), *chr1 = serial_hd(1);
     CPUState *cpu = NULL;
+    DeviceState *dev;
     uint64_t flash_size = 2 * MiB;
 
     m->ints = ATBM_HERA_INTSINK(qdev_new(TYPE_ATBM_HERA_INTSINK));
@@ -251,6 +267,19 @@ static void atbm_hera_init(MachineState *machine)
 
     atbm_hera_dev(m, "atbm-hera-uart", "uart1", 0x16200000, 19, chr0);
     atbm_hera_dev(m, "atbm-hera-uart", "uart2", 0x16300000, 20, chr1);
+    atbm_hera_dev(m, "atbm-hera-pit", "pit1", 0x16400000, 18, NULL);
+    /*
+     * PIT2 and PIT3 share an interrupt: the lib's handler for 17 and 18
+     * is one routine that polls all three PITs (assumption: the 3rd PIT
+     * has no number of its own in dev_int.h)
+     */
+    m->pit_or = atbm_hera_or(m, "pit-or", 2, 17);
+    dev = atbm_hera_dev(m, "atbm-hera-pit", "pit2", 0x16500000, -1, NULL);
+    sysbus_connect_irq(SYS_BUS_DEVICE(dev), 0,
+                       qdev_get_gpio_in(m->pit_or, 0));
+    dev = atbm_hera_dev(m, "atbm-hera-pit", "pit3", 0x17000000, -1, NULL);
+    sysbus_connect_irq(SYS_BUS_DEVICE(dev), 0,
+                       qdev_get_gpio_in(m->pit_or, 1));
 
     if (machine->cpu_type) {
         cpu = CPU(cpu_create(machine->cpu_type));

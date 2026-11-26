@@ -68,6 +68,11 @@ static inline QTestState *hera_init(const char *args)
     return qts;
 }
 
+/*
+ * qtest watches the lines of one device at a time: this is the interrupt
+ * sink's. A test that needs another device's lines starts the machine
+ * with qtest_init() and intercepts those itself.
+ */
 static inline bool hera_irq(QTestState *qts, int n)
 {
     return qtest_get_irq(qts, n);
