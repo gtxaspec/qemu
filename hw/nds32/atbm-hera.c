@@ -41,7 +41,12 @@
 #include "hw/core/or-irq.h"
 #include "hw/core/loader.h"
 #include "hw/core/qdev-properties.h"
+#include "hw/block/atbm-hera-nor.h"
+#include "hw/core/qdev-properties-system.h"
 #include "hw/core/sysbus.h"
+#include "hw/ssi/ssi.h"
+#include "system/blockdev.h"
+#include "system/block-backend.h"
 #include "hw/misc/unimp.h"
 #include "system/address-spaces.h"
 #include "system/system.h"
@@ -127,13 +132,13 @@ struct AtbmHeraMachine {
     MemoryRegion rom;
     MemoryRegion dtcm;
     MemoryRegion sram;
-    MemoryRegion flash;
     MemoryRegion flash_cached;
     MemoryRegion flash_uncached;
     AtbmHeraIntSink *ints;
     /* the interrupt numbers that two sources share, through an OR */
     DeviceState *pit_or;
     DeviceState *nmi_or;
+    AtbmHeraNorState *nor;
     uint32_t entry;
     bool wire_cpu;
 };
@@ -188,7 +193,7 @@ static void atbm_hera_load_elf(AtbmHeraMachine *m, const char *filename)
     gsize len;
     Elf32_Ehdr *eh;
     Elf32_Phdr *ph;
-    uint64_t flash_size = memory_region_size(&m->flash);
+    uint64_t flash_size = m->nor->size;
 
     if (!g_file_get_contents(filename, &data, &len, NULL) ||
         len < sizeof(*eh)) {
@@ -247,7 +252,8 @@ static void atbm_hera_init(MachineState *machine)
     Chardev *chr0 = serial_hd(0), *chr1 = serial_hd(1);
     CPUState *cpu = NULL;
     DeviceState *dev;
-    uint64_t flash_size = 2 * MiB;
+    DriveInfo *dinfo = drive_get(IF_MTD, 0, 0);
+    DeviceState *spi1;
 
     m->ints = ATBM_HERA_INTSINK(qdev_new(TYPE_ATBM_HERA_INTSINK));
     object_property_add_child(OBJECT(m), "intsink", OBJECT(m->ints));
@@ -266,14 +272,33 @@ static void atbm_hera_init(MachineState *machine)
                            &error_fatal);
     memory_region_add_subregion(sysmem, SRAM_BASE, &m->sram);
 
-    memory_region_init_ram(&m->flash, NULL, "atbm-hera.flash", flash_size,
+    /*
+     * The flash: 2 MiB, or 4 if the image is bigger. It sits behind SPI1,
+     * which is also its controller, and its array is what the XIP windows
+     * show, read-only
+     */
+    spi1 = atbm_hera_dev(m, "atbm-hera-spi", "spi1", 0x16a00000, -1, NULL);
+    m->nor = ATBM_HERA_NOR(qdev_new(TYPE_ATBM_HERA_NOR));
+    object_property_add_child(OBJECT(m), "flash", OBJECT(m->nor));
+    if (dinfo) {
+        BlockBackend *blk = blk_by_legacy_dinfo(dinfo);
+
+        qdev_prop_set_drive_err(DEVICE(m->nor), "drive", blk, &error_fatal);
+        qdev_prop_set_uint32(DEVICE(m->nor), "size",
+                             blk_getlength(blk) > 2 * MiB ? 4 * MiB : 2 * MiB);
+    }
+    qdev_realize_and_unref(DEVICE(m->nor), qdev_get_child_bus(spi1, "ssi"),
                            &error_fatal);
-    memset(memory_region_get_ram_ptr(&m->flash), 0xff, flash_size);
+    qdev_connect_gpio_out_named(spi1, "cs", 0,
+                                qdev_get_gpio_in_named(DEVICE(m->nor),
+                                                       SSI_GPIO_CS, 0));
     memory_region_init_alias(&m->flash_cached, NULL, "atbm-hera.flash-c",
-                             &m->flash, 0, MIN(flash_size, XIP_SIZE));
+                             &m->nor->array, 0, MIN(m->nor->size, XIP_SIZE));
+    memory_region_set_readonly(&m->flash_cached, true);
     memory_region_add_subregion(sysmem, XIP_BASE, &m->flash_cached);
     memory_region_init_alias(&m->flash_uncached, NULL, "atbm-hera.flash-nc",
-                             &m->flash, 0, MIN(flash_size, XIP_SIZE));
+                             &m->nor->array, 0, MIN(m->nor->size, XIP_SIZE));
+    memory_region_set_readonly(&m->flash_uncached, true);
     memory_region_add_subregion(sysmem, XIPNC_BASE, &m->flash_uncached);
 
     atbm_hera_dev(m, "atbm-hera-uart", "uart1", 0x16200000, 19, chr0);
@@ -293,6 +318,7 @@ static void atbm_hera_init(MachineState *machine)
                        qdev_get_gpio_in(m->pit_or, 1));
 
     atbm_hera_dev(m, "atbm-hera-efuse", "efuse", 0x16b00000, -1, NULL);
+    dev = atbm_hera_dev(m, "atbm-hera-spi", "spi3", 0x16d00000, 13, NULL);
     dev = atbm_hera_dev(m, "atbm-hera-smu", "smu", 0x16100000, 28, NULL);
     atbm_hera_connect(m, dev, 1, 30);
     dev = atbm_hera_dev(m, "atbm-hera-gpio", "gpio", 0x16800000, 23, NULL);

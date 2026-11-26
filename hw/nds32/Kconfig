@@ -10,3 +10,5 @@ config ATBM_HERA
     select OR_IRQ
     select SERIAL_MM
     select UNIMP
+    select SSI
+    select SD

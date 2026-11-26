@@ -19,3 +19,4 @@ system_ss.add(when: 'CONFIG_VHOST_USER_BLK', if_true: files('vhost-user-blk.c'))
 system_ss.add(when: 'CONFIG_VHOST_USER_BLK', if_true: files('virtio-blk-common.c'))
 
 subdir('dataplane')
+system_ss.add(when: 'CONFIG_ATBM_HERA', if_true: files('atbm-hera-nor.c'))

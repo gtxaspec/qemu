@@ -362,7 +362,7 @@ qtests_riscv32 = \
    ['atbm-hera-uart-test', 'atbm-hera-pit-test',
     'atbm-hera-wdt-test', 'atbm-hera-rtc-test',
     'atbm-hera-gpio-test', 'atbm-hera-smu-test',
-    'atbm-hera-efuse-test'] : [])
+    'atbm-hera-efuse-test', 'atbm-hera-spi-test'] : [])
 
 qtests_riscv64 = ['riscv-csr-test'] + \
   (unpack_edk2_blobs ? ['bios-tables-test'] : []) + \
