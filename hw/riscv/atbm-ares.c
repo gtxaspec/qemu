@@ -87,7 +87,7 @@ struct Atbm6461State {
     MachineState parent_obj;
 
     RISCVHartArrayState cpus;
-    MemoryRegion itcm, dtcm, sram, mac_a, mac_b, rom, flash;
+    MemoryRegion itcm, dtcm, sram, mac_a, mac_b, mac_c, rom, flash;
     MemoryRegion flash_nocache, flash_cached, flash_image;
     MemoryRegion periph, mac, sys1;
     PeriphWin pwin[2];
@@ -401,6 +401,10 @@ static void ares_init(MachineState *machine)
     memory_region_init_ram(&s->mac_b, NULL, "atbm6461.mac-ram-b", 1 * MiB,
                            &error_fatal);
     memory_region_add_subregion(sys, 0x20800000, &s->mac_b);
+    /* the MAC's descriptor memory: the EBM queue entries live here */
+    memory_region_init_ram(&s->mac_c, NULL, "atbm6461.mac-ram-c", 1 * MiB,
+                           &error_fatal);
+    memory_region_add_subregion(sys, 0x18100000, &s->mac_c);
     memory_region_init_ram(&s->sram, NULL, "atbm6461.sram", SRAM_SIZE,
                            &error_fatal);
     memory_region_add_subregion(sys, SRAM_BASE, &s->sram);
