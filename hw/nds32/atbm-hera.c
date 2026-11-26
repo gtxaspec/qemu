@@ -55,6 +55,8 @@
 #include "hw/core/cpu.h"
 #include "hw/core/irq.h"
 #include "hw/core/or-irq.h"
+#include "hw/net/atbm-hera-lmac.h"
+#include "net/net.h"
 #include "hw/core/loader.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/block/atbm-hera-nor.h"
@@ -627,6 +629,18 @@ static void atbm_hera_init(MachineState *machine)
     atbm_hera_wifi_stub(m, "phy", 0x0ac00000, 0x100000);
     atbm_hera_dev(m, "atbm-hera-crypto", "crypto", 0x17200000, -1, NULL);
     create_unimplemented_device("atbm-hera.wgt", 0x0ad00000, 0x100000);
+
+    /*
+     * Not on the chip: the port a firmware linked with a stand-in LMAC
+     * talks WSM through (include/hw/net/atbm-hera-lmac.h). It takes the
+     * next -nic, and is inert for a firmware with the vendor LMAC.
+     */
+    dev = qdev_new(TYPE_ATBM_HERA_LMAC);
+    object_property_add_child(OBJECT(m), "lmac", OBJECT(dev));
+    qemu_configure_nic_device(dev, true, NULL);
+    sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
+    sysbus_mmio_map(SYS_BUS_DEVICE(dev), 0, ATBM_HERA_LMAC_BASE);
+    atbm_hera_connect(m, dev, 0, ATBM_HERA_LMAC_IRQ);
 
     if (machine->cpu_type) {
         m->cpu = CPU(cpu_create(machine->cpu_type));

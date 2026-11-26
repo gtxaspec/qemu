@@ -1601,7 +1601,9 @@ F: hw/net/txw901u.c
 F: hw/net/wifi-*
 F: hw/net/wq9001.c
 F: hw/net/ws73.c
+F: include/hw/net/atbm-*.h
 F: include/hw/net/wifi-*.h
+F: tests/qtest/atbm-hera-lmac-test.c
 
 SDIO cards
 M: Alfonso Gamboa <gtxent@gmail.com>

@@ -76,6 +76,7 @@ system_ss.add(when: 'CONFIG_AIC_WIFI', if_true: files('aic-wifi.c', 'aic-sdio.c'
 system_ss.add(when: ['CONFIG_AIC_WIFI', 'CONFIG_USB'], if_true: files('aic-usb.c'))
 system_ss.add(when: 'CONFIG_ATBM_WIFI', if_true: files('atbm-wifi.c', 'atbm-iot.c', 'atbm-mcu.c', 'atbm-rtos.c', 'atbm-sdio.c', 'atbm-hera-link-sdio.c'))
 system_ss.add(when: ['CONFIG_ATBM_WIFI', 'CONFIG_USB'], if_true: files('atbm-usb.c'))
+system_ss.add(when: ['CONFIG_ATBM_WIFI', 'CONFIG_ATBM_HERA'], if_true: files('atbm-hera-lmac.c'))
 system_ss.add(when: 'CONFIG_BCM_WIFI', if_true: files('bcm-wifi.c', 'bcm-sdio.c'))
 system_ss.add(when: 'CONFIG_HI3881_WIFI', if_true: files('hi3881.c'))
 system_ss.add(when: 'CONFIG_RTL_WIFI', if_true: files('rtl-wifi.c', 'rtl-sdio.c'))

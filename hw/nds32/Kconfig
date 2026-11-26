@@ -14,3 +14,4 @@ config ATBM_HERA
     select SD
     select I2C
     select AT24C
+    select ATBM_WIFI
