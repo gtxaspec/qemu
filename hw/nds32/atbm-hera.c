@@ -21,7 +21,9 @@
  * loaded there, one in the flash window goes into the flash, and every
  * segment's load address plus 0x10000 (the boot loader's 64 KiB in front
  * of ap.bin) is its place in the flash image, which the firmware's startup
- * code copies its data from.
+ * code copies its data from, including the zeros of .bss (the SDK's image
+ * tool stores them, and __c_init copies them from flash: a segment's
+ * memory size, not its file size, is what lands in the flash).
  *
  * Copyright (C) 2026 Alfonso Gamboa <gtxent@gmail.com>
  *
@@ -214,24 +216,29 @@ static void atbm_hera_load_elf(AtbmHeraMachine *m, const char *filename)
     m->entry = eh->e_entry;
     ph = (Elf32_Phdr *)(data + eh->e_phoff);
     for (int i = 0; i < eh->e_phnum; i++) {
-        uint32_t va = ph[i].p_vaddr, pa = ph[i].p_paddr, n = ph[i].p_filesz;
+        uint32_t va = ph[i].p_vaddr, pa = ph[i].p_paddr;
+        uint32_t fl = ph[i].p_filesz, n = ph[i].p_memsz;
         g_autofree char *name = g_strdup_printf("atbm-hera.seg%d", i);
+        /* the image of a segment is its file bytes, then zeros up to memsz */
+        g_autofree uint8_t *img = NULL;
 
-        if (ph[i].p_type != PT_LOAD || !n ||
-            (uint64_t)ph[i].p_offset + n > len) {
+        if (ph[i].p_type != PT_LOAD || !n || fl > n ||
+            (uint64_t)ph[i].p_offset + fl > len) {
             continue;
         }
+        img = g_malloc0(n);
+        memcpy(img, data + ph[i].p_offset, fl);
         if (atbm_hera_in(va, n, ILM_BASE, ILM_SIZE) ||
             atbm_hera_in(va, n, DTCM_BASE, DTCM_SIZE) ||
             atbm_hera_in(va, n, SRAM_BASE, SRAM_SIZE)) {
-            rom_add_blob_fixed(name, data + ph[i].p_offset, n, va);
+            rom_add_blob_fixed(name, img, n, va);
         } else if (atbm_hera_in(va, n, XIP_BASE, XIP_SIZE) &&
                    va - XIP_BASE + n <= flash_size) {
-            rom_add_blob_fixed(name, data + ph[i].p_offset, n, va);
+            rom_add_blob_fixed(name, img, n, va);
             continue;
         } else if (atbm_hera_in(va, n, XIPNC_BASE, XIP_SIZE) &&
                    va - XIPNC_BASE + n <= flash_size) {
-            rom_add_blob_fixed(name, data + ph[i].p_offset, n, va);
+            rom_add_blob_fixed(name, img, n, va);
             continue;
         } else {
             warn_report("atbm-hera: segment %d at 0x%x not in a memory", i,
@@ -241,8 +248,7 @@ static void atbm_hera_load_elf(AtbmHeraMachine *m, const char *filename)
         if (pa + FLASH_BOOT_LEN + n <= flash_size) {
             g_autofree char *lma = g_strdup_printf("atbm-hera.lma%d", i);
 
-            rom_add_blob_fixed(lma, data + ph[i].p_offset, n,
-                               XIP_BASE + FLASH_BOOT_LEN + pa);
+            rom_add_blob_fixed(lma, img, n, XIP_BASE + FLASH_BOOT_LEN + pa);
         }
     }
 }
@@ -293,6 +299,19 @@ static void atbm_hera_cpu_reset(void *opaque)
             cpu_set_pc(m->cpu, m->entry);
         }
     }
+}
+
+/* A register file that answers what the LMAC's init waits for */
+static void atbm_hera_wifi_stub(AtbmHeraMachine *m, const char *name,
+                                hwaddr base, uint32_t size)
+{
+    DeviceState *dev = qdev_new("atbm-hera-wifi-stub");
+
+    object_property_add_child(OBJECT(m), name, OBJECT(dev));
+    qdev_prop_set_uint32(dev, "base", base);
+    qdev_prop_set_uint32(dev, "size", size);
+    sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
+    sysbus_mmio_map(SYS_BUS_DEVICE(dev), 0, base);
 }
 
 static void atbm_hera_init(MachineState *machine)
@@ -420,11 +439,12 @@ static void atbm_hera_init(MachineState *machine)
      * The Wi-Fi MAC and PHY: undocumented, out of scope here (a shim at
      * the WSM boundary is the plan), so reads give 0 and are logged
      */
-    create_unimplemented_device("atbm-hera.pac", 0x0a500000, 0x20000);
+    atbm_hera_wifi_stub(m, "pac", 0x0a500000, 0x20000);
     create_unimplemented_device("atbm-hera.rab", 0x0a520000, 0x20000);
     create_unimplemented_device("atbm-hera.smart", 0x0a540000, 0x20000);
     create_unimplemented_device("atbm-hera.pac-seq", 0x0a560000, 0x20000);
-    create_unimplemented_device("atbm-hera.phy", 0x0ac00000, 0x100000);
+    atbm_hera_wifi_stub(m, "phy", 0x0ac00000, 0x100000);
+    atbm_hera_wifi_stub(m, "hash", 0x17200000, 0x1000);
     create_unimplemented_device("atbm-hera.wgt", 0x0ad00000, 0x100000);
 
     if (machine->cpu_type) {
