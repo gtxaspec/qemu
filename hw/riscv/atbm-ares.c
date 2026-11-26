@@ -19,9 +19,9 @@
  * Address 0 faults, as on the chip (a PMP guard).
  *
  * The boot ROM is not available. A stand-in at the reset vector jumps into
- * the bootloader, which is all of the ROM's job a boot shows. Not modelled
- * and not available: the ROM's library at 0x60000, which the firmware's
- * EXEC.IT table (154 of its 192 targets) calls into.
+ * the bootloader, which is all of the ROM's job a boot shows. The firmware
+ * copies the BLE core's code and data to 0x20060000 and 0x20800000 (RAM
+ * here); that second core, whose 0x60000 is that ILM, is not modelled.
  *
  * Copyright (C) 2026 Alfonso Gamboa <gtxent@gmail.com>
  *
@@ -96,7 +96,9 @@ struct Atbm6461State {
     DeviceState *smu;
     int64_t cnt_start;
     MemoryRegion plicsw;
-    qemu_irq plicsw_irq, yield_irq;
+    qemu_irq plicsw_irq, yield_irq, *uart_irq;
+    uint32_t uart_lvl;
+    DeviceState *uart[3];
     uint32_t plicsw_pend, plicsw_en;
     DeviceState *plic;
 };
@@ -195,6 +197,30 @@ static uint64_t sys_read(void *opaque, hwaddr addr, unsigned size)
 
     memory_region_dispatch_read(smu_mr(s), addr, &v, size_memop(size) | MO_LE,
                                 MEMTXATTRS_UNSPECIFIED);
+    if ((addr & ~3) == 0x1e0) {
+        /*
+         * UART1, UART2 and UART3: a received byte with its interrupt on.
+         * The firmware's handler is for those, and runs before its UART
+         * structures are set up if a transmit interrupt left on by the
+         * bootloader shows here
+         */
+        static const int bit[3] = { 6, 7, 8 };
+        int u;
+
+        for (u = 0; u < 3; u++) {
+            uint64_t ier = 0, lsr = 0;
+            MemoryRegion *mr = sysbus_mmio_get_region(
+                SYS_BUS_DEVICE(s->uart[u]), 0);
+
+            memory_region_dispatch_read(mr, 0x24, &ier, MO_8,
+                                        MEMTXATTRS_UNSPECIFIED);
+            memory_region_dispatch_read(mr, 0x34, &lsr, MO_8,
+                                        MEMTXATTRS_UNSPECIFIED);
+            if ((ier & 1) && (lsr & 1)) {
+                        v |= 1u << bit[u];
+            }
+        }
+    }
     if ((addr & ~3) == 0x1100) {
         /* 10 us a tick from when 0x10f4 bit 0 is set (wdt_calib's start) */
         return muldiv64(qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) - s->cnt_start,
@@ -334,6 +360,14 @@ static const MemoryRegionOps plicsw_ops = {
     .valid.max_access_size = 4,
 };
 
+static void ares_uart_irq(void *opaque, int n, int level)
+{
+    Atbm6461State *s = opaque;
+
+    s->uart_lvl = deposit32(s->uart_lvl, n, 1, level);
+    qemu_set_irq(qdev_get_gpio_in(s->plic, 17), !!s->uart_lvl);
+}
+
 static void ares_init(MachineState *machine)
 {
     Atbm6461State *s = ATBM6461_MACHINE(machine);
@@ -418,9 +452,22 @@ static void ares_init(MachineState *machine)
     memory_region_set_readonly(&s->flash_image, true);
     memory_region_add_subregion(sys, FLASH_IMAGE_WIN, &s->flash_image);
 
-    ares_dev(s, "atbm-hera-uart", "uart1", 0x16200000, 19, serial_hd(0));
-    ares_dev(s, "atbm-hera-uart", "uart2", 0x16300000, 17, serial_hd(1));
-    ares_dev(s, "atbm-hera-uart", "uart3", 0x17600000, 31, serial_hd(2));
+    /*
+     * The UARTs' interrupts go through the clock and power block: its
+     * status at 0x1e0 has them at bits 6 (UART1), 7 (UART2) and 8 (UART3),
+     * and the firmware's handler for interrupt 17 reads that; the
+     * bootloader's handler for 17 polls UART2 itself
+     */
+    s->uart_irq = qemu_allocate_irqs(ares_uart_irq, s, 3);
+    dev = ares_dev(s, "atbm-hera-uart", "uart1", 0x16200000, -1, serial_hd(0));
+    s->uart[0] = dev;
+    sysbus_connect_irq(SYS_BUS_DEVICE(dev), 0, s->uart_irq[0]);
+    dev = ares_dev(s, "atbm-hera-uart", "uart2", 0x16300000, -1, serial_hd(1));
+    s->uart[1] = dev;
+    sysbus_connect_irq(SYS_BUS_DEVICE(dev), 0, s->uart_irq[1]);
+    dev = ares_dev(s, "atbm-hera-uart", "uart3", 0x17600000, -1, serial_hd(2));
+    s->uart[2] = dev;
+    sysbus_connect_irq(SYS_BUS_DEVICE(dev), 0, s->uart_irq[2]);
     /* one handler, number 18, polls all three PITs */
     pit_or = qdev_new(TYPE_OR_IRQ);
     object_property_add_child(OBJECT(machine), "pit-or", OBJECT(pit_or));

@@ -245,10 +245,8 @@ static bool trans_flmism(DisasContext *ctx, arg_flmism *a)
  * EXEC.IT: executes the 32-bit instruction at uitb + imm as if it stood in
  * place of the EXEC.IT, so the link register takes the address after it. The
  * exception is a JAL: its immediate in the table is an address in the 2 MiB
- * the EXEC.IT is in (the table's targets here are all in the ROM and ITCM
- * at 0x60000 to 0x7ffff, which the firmware's flash window code reaches this
- * way). The table is read as the TB is translated, and a write to uitb
- * flushes the TBs. Andes' own model (andestech/qemu) does the same.
+ * the EXEC.IT is in. The table is read as the TB is translated, and a write
+ * to uitb flushes the TBs. Andes' own model (andestech/qemu) does the same.
  */
 static bool trans_exec_it(DisasContext *ctx, uint32_t opcode)
 {
@@ -270,13 +268,6 @@ static bool trans_exec_it(DisasContext *ctx, uint32_t opcode)
                            extract32(insn, 12, 8) << 12 |
                            extract32(insn, 31, 1) << 20;
         target_ulong target = (ctx->base.pc_next & ~0x1fffffu) | imm;
-
-        /* the ROM library at 0x60000 reads as zero and cannot run */
-        if (target >= 0x60000 && target < 0x70000) {
-            qemu_log_mask(LOG_UNIMP, "exec.it at 0x%" PRIx64
-                          ": ROM target 0x%" PRIx64 "\n",
-                          (uint64_t)ctx->base.pc_next, (uint64_t)target);
-        }
 
         gen_jal(ctx, extract32(insn, 7, 5), target - ctx->base.pc_next);
         return true;
