@@ -36,6 +36,11 @@
  * The DMA request lines "dreq-tx" and "dreq-rx" follow CTRL's enables and
  * the FIFOs.
  *
+ * With "slave" set (SPI2) the block reads as the slave-capable one and
+ * keeps SLVST and SLVCNT, but is still driven as a master: the slave
+ * protocol of the SPI host interface (hi_spi.c, its status word, DMA
+ * channels and GPIO handshake) is not modelled.
+ *
  * Not modelled: the data length (8 bits only), LSB first, the direct pin
  * mode and the slave mode, SCLK timing (a byte takes no time).
  * Assumptions: FIFO depths of 4 entries (HWCFG says so); the end interrupt
@@ -79,6 +84,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(AtbmHeraSpiState, ATBM_HERA_SPI)
 
 #define IDREV_VALUE     0x02020000
 #define HWCFG_VALUE     0x00001711
+#define HWCFG_SLAVE     BIT(14)
 
 #define IFSET_MERGE     BIT(7)
 
@@ -115,6 +121,7 @@ struct AtbmHeraSpiState {
 
     MemoryRegion iomem;
     SSIBus *ssi;
+    bool slave;
     qemu_irq irq;
     qemu_irq cs;
     qemu_irq dreq_tx;
@@ -402,7 +409,7 @@ static uint64_t spi_read(void *opaque, hwaddr addr, unsigned size)
     case S_SLVCNT:
         return s->slvcnt;
     case S_HWCFG:
-        return HWCFG_VALUE;
+        return HWCFG_VALUE | (s->slave ? HWCFG_SLAVE : 0);
     default:
         qemu_log_mask(LOG_UNIMP, "atbm-hera-spi: read at 0x%" HWADDR_PRIx
                       "\n", addr);
@@ -545,6 +552,10 @@ static void spi_init(Object *obj)
     qdev_init_gpio_out_named(DEVICE(obj), &s->dreq_rx, "dreq-rx", 1);
 }
 
+static const Property spi_props[] = {
+    DEFINE_PROP_BOOL("slave", AtbmHeraSpiState, slave, false),
+};
+
 static const VMStateDescription vmstate_spi_fifo = {
     .name = TYPE_ATBM_HERA_SPI "/fifo",
     .version_id = 1,
@@ -593,6 +604,7 @@ static void spi_class_init(ObjectClass *oc, const void *data)
 
     dc->realize = spi_realize;
     dc->vmsd = &vmstate_spi;
+    device_class_set_props(dc, spi_props);
     rc->phases.hold = spi_reset_hold;
 }
 

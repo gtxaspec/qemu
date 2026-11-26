@@ -263,9 +263,13 @@ static void atbm_hera_init(MachineState *machine)
     memory_region_init_ram(&m->ilm, NULL, "atbm-hera.ilm", ILM_SIZE,
                            &error_fatal);
     memory_region_add_subregion(sysmem, ILM_BASE, &m->ilm);
-    memory_region_init_ram(&m->rom, NULL, "atbm-hera.rom", ROM_SIZE,
+    memory_region_init_rom(&m->rom, NULL, "atbm-hera.rom", ROM_SIZE,
                            &error_fatal);
     memory_region_add_subregion(sysmem, ROM_BASE, &m->rom);
+    if (machine->firmware) {
+        load_image_targphys(machine->firmware, ROM_BASE, ROM_SIZE,
+                            &error_fatal);
+    }
     memory_region_init_ram(&m->dtcm, NULL, "atbm-hera.dtcm", DTCM_SIZE,
                            &error_fatal);
     memory_region_add_subregion(sysmem, DTCM_BASE, &m->dtcm);
@@ -304,6 +308,7 @@ static void atbm_hera_init(MachineState *machine)
 
     atbm_hera_dev(m, "atbm-hera-uart", "uart1", 0x16200000, 19, chr0);
     atbm_hera_dev(m, "atbm-hera-uart", "uart2", 0x16300000, 20, chr1);
+    atbm_hera_dev(m, "atbm-hera-uart", "uart3", 0x17600000, 31, serial_hd(2));
     atbm_hera_dev(m, "atbm-hera-pit", "pit1", 0x16400000, 18, NULL);
     /*
      * PIT2 and PIT3 share an interrupt: the lib's handler for 17 and 18
@@ -328,6 +333,16 @@ static void atbm_hera_init(MachineState *machine)
                                 qdev_get_gpio_in_named(dmac, "req", 6));
     qdev_connect_gpio_out_named(spi1, "dreq-rx", 0,
                                 qdev_get_gpio_in_named(dmac, "req", 7));
+    /* SPI2 is the slave-capable one: see atbm-hera-spi.c */
+    dev = qdev_new("atbm-hera-spi");
+    object_property_add_child(OBJECT(m), "spi2", OBJECT(dev));
+    qdev_prop_set_bit(dev, "slave", true);
+    sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
+    sysbus_mmio_map(SYS_BUS_DEVICE(dev), 0, 0x16c00000);
+    qdev_connect_gpio_out_named(dev, "dreq-tx", 0,
+                                qdev_get_gpio_in_named(dmac, "req", 4));
+    qdev_connect_gpio_out_named(dev, "dreq-rx", 0,
+                                qdev_get_gpio_in_named(dmac, "req", 5));
     dev = atbm_hera_dev(m, "atbm-hera-spi", "spi3", 0x16d00000, 13, NULL);
     qdev_connect_gpio_out_named(dev, "dreq-tx", 0,
                                 qdev_get_gpio_in_named(dmac, "req", 8));
@@ -352,6 +367,17 @@ static void atbm_hera_init(MachineState *machine)
     sysbus_connect_irq(SYS_BUS_DEVICE(dev), 0, qdev_get_gpio_in(m->nmi_or, 0));
     dev = atbm_hera_dev(m, "atbm-hera-wdt", "wdt2", 0x17500000, -1, NULL);
     sysbus_connect_irq(SYS_BUS_DEVICE(dev), 0, qdev_get_gpio_in(m->nmi_or, 1));
+
+    /*
+     * The Wi-Fi MAC and PHY: undocumented, out of scope here (a shim at
+     * the WSM boundary is the plan), so reads give 0 and are logged
+     */
+    create_unimplemented_device("atbm-hera.pac", 0x0a500000, 0x20000);
+    create_unimplemented_device("atbm-hera.rab", 0x0a520000, 0x20000);
+    create_unimplemented_device("atbm-hera.smart", 0x0a540000, 0x20000);
+    create_unimplemented_device("atbm-hera.pac-seq", 0x0a560000, 0x20000);
+    create_unimplemented_device("atbm-hera.phy", 0x0ac00000, 0x100000);
+    create_unimplemented_device("atbm-hera.wgt", 0x0ad00000, 0x100000);
 
     if (machine->cpu_type) {
         cpu = CPU(cpu_create(machine->cpu_type));
