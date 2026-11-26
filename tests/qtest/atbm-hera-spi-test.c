@@ -63,6 +63,7 @@ static void wr(QTestState *qts, uint32_t base, uint32_t reg, uint32_t v)
 static void begin(QTestState *qts)
 {
     g_assert_cmphex(rd(qts, HERA_SPI1, ST) & ST_BUSY, ==, 0);
+    wr(qts, HERA_SPI1, IFSET, (2 << 16) | (7 << 8) | BIT(7));
     wr(qts, HERA_SPI1, CTRL, CTRL_RST_FIFOS);
 }
 
@@ -153,7 +154,7 @@ static void test_reset(void)
     g_assert_cmphex(rd(qts, HERA_SPI1, HWCFG), ==, 0x00001711);
     g_assert_cmphex(rd(qts, HERA_SPI1, ST), ==, ST_RXEM | ST_TXEM);
     g_assert_cmphex(rd(qts, HERA_SPI1, IFSET) & 0x3ff80, ==,
-                    (2 << 16) | (7 << 8) | BIT(7));
+                    (2 << 16) | (7 << 8));
     g_assert_cmphex(rd(qts, HERA_SPI1, INTEN), ==, 0);
     g_assert_cmphex(rd(qts, HERA_SPI3, HWCFG), ==, 0x00001711);
     qtest_quit(qts);

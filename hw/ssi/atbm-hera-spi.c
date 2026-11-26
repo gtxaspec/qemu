@@ -44,7 +44,10 @@
  * Not modelled: the data length (8 bits only), LSB first, the direct pin
  * mode and the slave mode, SCLK timing (a byte takes no time).
  * Assumptions: FIFO depths of 4 entries (HWCFG says so); the end interrupt
- * is raised when the last byte has been clocked.
+ * is raised when the last byte has been clocked; IFSET resets to what the
+ * firmware's spi_init() writes (3-byte address, 8-bit data, no merge): the
+ * SDK's flash driver reads the data port a byte per 32-bit access without
+ * ever writing IFSET, so the bootrom must leave it that way.
  *
  * Copyright (C) 2026 Alfonso Gamboa <gtxent@gmail.com>
  *
@@ -504,7 +507,7 @@ static void spi_reset_hold(Object *obj, ResetType type)
 {
     AtbmHeraSpiState *s = ATBM_HERA_SPI(obj);
 
-    s->ifset = (2 << 16) | (7 << 8) | IFSET_MERGE;
+    s->ifset = (2 << 16) | (7 << 8);
     s->pio = 0;
     s->reqdelay = 0;
     s->transctrl = 0;
