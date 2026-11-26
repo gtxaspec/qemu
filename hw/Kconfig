@@ -58,9 +58,9 @@ source hppa/Kconfig
 source i386/Kconfig
 source loongarch/Kconfig
 source m68k/Kconfig
+source nds32/Kconfig
 source microblaze/Kconfig
 source mips/Kconfig
-source nds32/Kconfig
 source or1k/Kconfig
 source ppc/Kconfig
 source riscv/Kconfig

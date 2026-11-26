@@ -357,7 +357,9 @@ qtests_s390x = \
    'migration-test']
 
 qtests_riscv32 = \
-  (config_all_devices.has_key('CONFIG_SIFIVE_E_AON') ? ['sifive-e-aon-watchdog-test'] : [])
+  (config_all_devices.has_key('CONFIG_SIFIVE_E_AON') ? ['sifive-e-aon-watchdog-test'] : []) + \
+  (config_all_devices.has_key('CONFIG_ATBM_HERA') ?
+   ['atbm-hera-uart-test'] : [])
 
 qtests_riscv64 = ['riscv-csr-test'] + \
   (unpack_edk2_blobs ? ['bios-tables-test'] : []) + \

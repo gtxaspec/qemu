@@ -4,3 +4,9 @@ config NDS32_VIRT
     depends on NDS32
     select SERIAL_MM
     select SIFIVE_TEST
+
+config ATBM_HERA
+    bool
+    select OR_IRQ
+    select SERIAL_MM
+    select UNIMP
