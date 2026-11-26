@@ -700,9 +700,9 @@ static void gen_divide(TCGv_i32 q, TCGv_i32 r, TCGv_i32 x, TCGv_i32 y,
         tcg_gen_remu_i32(nr, x, y);
     }
     gen_set_label(done);
-    /* write q first so that overlapping operands see the divide result */
-    tcg_gen_mov_i32(q, nq);
+    /* the quotient is written last: it wins when both are the same register */
     tcg_gen_mov_i32(r, nr);
+    tcg_gen_mov_i32(q, nq);
 }
 
 static bool trans_divsr(DisasContext *ctx, arg_r4 *a)
@@ -730,6 +730,51 @@ static bool trans_div(DisasContext *ctx, arg_dt3 *a)
 {
     gen_divide(cpu_d[a->dt * 2], cpu_d[a->dt * 2 + 1], cpu_gpr[a->ra],
                cpu_gpr[a->rb], false);
+    return true;
+}
+
+static bool trans_ffb(DisasContext *ctx, arg_r3 *a)
+{
+    gen_helper_ffb(cpu_gpr[a->rt], cpu_gpr[a->ra], cpu_gpr[a->rb]);
+    return true;
+}
+
+static bool trans_ffbi(DisasContext *ctx, arg_rri *a)
+{
+    gen_helper_ffb(cpu_gpr[a->rt], cpu_gpr[a->ra], tcg_constant_i32(a->imm));
+    return true;
+}
+
+static bool trans_ffmism(DisasContext *ctx, arg_r3 *a)
+{
+    gen_helper_ffmism(cpu_gpr[a->rt], cpu_gpr[a->ra], cpu_gpr[a->rb]);
+    return true;
+}
+
+static bool trans_flmism(DisasContext *ctx, arg_r3 *a)
+{
+    gen_helper_flmism(cpu_gpr[a->rt], cpu_gpr[a->ra], cpu_gpr[a->rb]);
+    return true;
+}
+
+static bool trans_ffzmism(DisasContext *ctx, arg_r3 *a)
+{
+    gen_helper_ffzmism(cpu_gpr[a->rt], cpu_gpr[a->ra], cpu_gpr[a->rb]);
+    return true;
+}
+
+static bool trans_pbsad(DisasContext *ctx, arg_r3 *a)
+{
+    gen_helper_pbsad(cpu_gpr[a->rt], cpu_gpr[a->ra], cpu_gpr[a->rb]);
+    return true;
+}
+
+static bool trans_pbsada(DisasContext *ctx, arg_r3 *a)
+{
+    TCGv_i32 t = tcg_temp_new_i32();
+
+    gen_helper_pbsad(t, cpu_gpr[a->ra], cpu_gpr[a->rb]);
+    tcg_gen_add_i32(cpu_gpr[a->rt], cpu_gpr[a->rt], t);
     return true;
 }
 
@@ -824,6 +869,7 @@ static bool ls_imm(DisasContext *ctx, int rt, int ra, int32_t off, MemOp mop,
         gen_load(ctx, rt, addr, mop);
     }
     if (post) {
+        /* the base is updated after the access, so it adds to a loaded rt */
         tcg_gen_addi_i32(cpu_gpr[ra], cpu_gpr[ra], off);
     }
     return true;
@@ -975,10 +1021,12 @@ static bool ls_reg(DisasContext *ctx, arg_mem *a, MemOp mop, bool store,
 {
     TCGv_i32 addr = tcg_temp_new_i32();
     TCGv_i32 off = tcg_temp_new_i32();
+    TCGv_i32 newbase = tcg_temp_new_i32();
 
     tcg_gen_shli_i32(off, cpu_gpr[a->rb], a->sv);
     if (post) {
         tcg_gen_mov_i32(addr, cpu_gpr[a->ra]);
+        tcg_gen_add_i32(newbase, cpu_gpr[a->ra], off);
     } else {
         tcg_gen_add_i32(addr, cpu_gpr[a->ra], off);
     }
@@ -988,7 +1036,8 @@ static bool ls_reg(DisasContext *ctx, arg_mem *a, MemOp mop, bool store,
         gen_load(ctx, a->rt, addr, mop);
     }
     if (post) {
-        tcg_gen_add_i32(cpu_gpr[a->ra], cpu_gpr[a->ra], off);
+        /* unlike the immediate forms, the new base wins over a loaded rt */
+        tcg_gen_mov_i32(cpu_gpr[a->ra], newbase);
     }
     return true;
 }
@@ -1145,10 +1194,11 @@ static bool gen_lsmw(DisasContext *ctx, int rb, int ra, int re, int enb4,
     }
 update:
     if (update) {
+        /* applied to ra as left by the loads */
         if (dec) {
-            tcg_gen_subi_i32(cpu_gpr[ra], base, 4 * n);
+            tcg_gen_subi_i32(cpu_gpr[ra], cpu_gpr[ra], 4 * n);
         } else {
-            tcg_gen_addi_i32(cpu_gpr[ra], base, 4 * n);
+            tcg_gen_addi_i32(cpu_gpr[ra], cpu_gpr[ra], 4 * n);
         }
     }
     return true;

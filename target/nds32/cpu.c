@@ -62,6 +62,12 @@ static int nds32_cpu_mmu_index(CPUState *cs, bool ifetch)
     return 0;
 }
 
+static void nds32_disas_set_info(const CPUState *cpu, disassemble_info *info)
+{
+    info->endian = BFD_ENDIAN_BIG;
+    info->print_insn = print_insn_nds32;
+}
+
 static void nds32_cpu_reset_hold(Object *obj, ResetType type)
 {
     CPUState *cs = CPU(obj);
@@ -218,6 +224,7 @@ static void nds32_cpu_class_init(ObjectClass *oc, const void *data)
     dc->vmsd = &vmstate_nds32_cpu;
     cc->sysemu_ops = &nds32_sysemu_ops;
 #endif
+    cc->disas_set_info = nds32_disas_set_info;
     cc->tcg_ops = &nds32_tcg_ops;
 }
 

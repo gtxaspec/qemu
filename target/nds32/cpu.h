@@ -189,6 +189,7 @@ void nds32_translate_init(void);
 void nds32_translate_code(CPUState *cs, TranslationBlock *tb,
                           int *max_insns, vaddr pc, void *host_pc);
 const char *nds32_excp_name(int excp);
+int print_insn_nds32(bfd_vma addr, disassemble_info *info);
 
 uint32_t nds32_mfsr(CPUNDS32State *env, uint32_t idx);
 void nds32_mtsr(CPUNDS32State *env, uint32_t idx, uint32_t val);

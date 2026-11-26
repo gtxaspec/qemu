@@ -10,6 +10,7 @@ nds32_ss = ss.source_set()
 nds32_ss.add(gen)
 nds32_ss.add(files(
   'cpu.c',
+  'disas.c',
   'helper.c',
   'translate.c',
 ))

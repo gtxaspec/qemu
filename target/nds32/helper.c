@@ -237,6 +237,77 @@ void HELPER(iret)(CPUNDS32State *env)
     nds32_update_irq(env);
 }
 
+/* Byte search results are the negative distance of the byte from the end */
+static uint32_t byte_pos(int i)
+{
+    return i - 4;
+}
+
+uint32_t HELPER(ffb)(uint32_t a, uint32_t b)
+{
+    int i;
+
+    for (i = 0; i < 4; i++) {
+        if (((a >> (i * 8)) & 0xff) == (b & 0xff)) {
+            return byte_pos(i);
+        }
+    }
+    return 0;
+}
+
+uint32_t HELPER(ffmism)(uint32_t a, uint32_t b)
+{
+    int i;
+
+    for (i = 0; i < 4; i++) {
+        if (((a ^ b) >> (i * 8)) & 0xff) {
+            return byte_pos(i);
+        }
+    }
+    return 0;
+}
+
+uint32_t HELPER(flmism)(uint32_t a, uint32_t b)
+{
+    int i;
+
+    for (i = 3; i >= 0; i--) {
+        if (((a ^ b) >> (i * 8)) & 0xff) {
+            return byte_pos(i);
+        }
+    }
+    return 0;
+}
+
+uint32_t HELPER(ffzmism)(uint32_t a, uint32_t b)
+{
+    int i;
+
+    for (i = 0; i < 4; i++) {
+        uint32_t x = (a >> (i * 8)) & 0xff;
+
+        if (x == 0 || x != ((b >> (i * 8)) & 0xff)) {
+            return byte_pos(i);
+        }
+    }
+    return 0;
+}
+
+/* Sum of absolute differences of the four byte pairs */
+uint32_t HELPER(pbsad)(uint32_t a, uint32_t b)
+{
+    uint32_t sum = 0;
+    int i;
+
+    for (i = 0; i < 4; i++) {
+        int x = (a >> (i * 8)) & 0xff;
+        int y = (b >> (i * 8)) & 0xff;
+
+        sum += abs(x - y);
+    }
+    return sum;
+}
+
 G_NORETURN void HELPER(standby)(CPUNDS32State *env)
 {
     CPUState *cs = env_cpu(env);

@@ -1,0 +1,12 @@
+alu 6cbd77ea
+imm 8e193fba
+mul f1b348de
+div 1c212271
+mem 0d854e2c
+br 6fc42e20
+lsmw 1161288c
+stack e7da2306
+misc16 1266ddd3
+ifc 8748a245
+bytes efef1b2b
+corner ef0189e4
