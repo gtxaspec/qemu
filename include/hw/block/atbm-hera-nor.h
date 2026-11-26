@@ -24,6 +24,8 @@ struct AtbmHeraNorState {
     /* the array as a RAM region, for the board to alias as XIP windows */
     MemoryRegion array;
     uint8_t *data;
+    uint8_t *pristine;          /* "restore-on-reset": the array as loaded */
+    bool restore_on_reset;
     BlockBackend *blk;
     QEMUTimer *timer;
 

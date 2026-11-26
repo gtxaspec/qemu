@@ -22,7 +22,11 @@
  *
  * The array is a RAM region, which the board maps for execute-in-place
  * reads. "drive" is the flash image (written back on a program or an
- * erase); without one the array starts erased (0xff).
+ * erase); without one the array starts erased (0xff). A real part keeps
+ * what the firmware writes across a reset; "restore-on-reset" puts the
+ * array back as it was loaded at every reset, for runs that must boot the
+ * same way each time (the firmware saves its configuration here, and the
+ * next boot takes another path).
  *
  * Copyright (C) 2026 Alfonso Gamboa <gtxent@gmail.com>
  *
@@ -375,6 +379,9 @@ static void nor_realize(SSIPeripheral *dev, Error **errp)
             return;
         }
     }
+    if (s->restore_on_reset) {
+        s->pristine = g_memdup2(s->data, s->size);
+    }
     s->timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, nor_done, s);
 }
 
@@ -389,6 +396,14 @@ static void nor_reset_hold(Object *obj, ResetType type)
     s->deep_pd = false;
     s->wsr_volatile = false;
     timer_del(s->timer);
+    if (s->pristine && memcmp(s->data, s->pristine, s->size)) {
+        memcpy(s->data, s->pristine, s->size);
+        memory_region_set_dirty(&s->array, 0, s->size);
+        if (s->blk && blk_pwrite(s->blk, 0, s->size, s->data, 0) < 0) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "atbm-hera-nor: restoring the image failed\n");
+        }
+    }
 }
 
 /*
@@ -426,6 +441,8 @@ static const Property nor_props[] = {
     DEFINE_PROP_UINT32("size", AtbmHeraNorState, size, 2 * MiB),
     DEFINE_PROP_UINT32("jedec-id", AtbmHeraNorState, jedec_id, 0),
     DEFINE_PROP_UINT8("status2", AtbmHeraNorState, sr2_reset, 0),
+    DEFINE_PROP_BOOL("restore-on-reset", AtbmHeraNorState, restore_on_reset,
+                     false),
 };
 
 static void nor_class_init(ObjectClass *oc, const void *data)

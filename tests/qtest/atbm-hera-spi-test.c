@@ -249,6 +249,25 @@ static void test_program_erase(void)
     qtest_quit(qts);
 }
 
+/* the flash keeps a program over a reset, unless it is set to restore */
+static void test_restore_on_reset(void)
+{
+    uint8_t out[4] = { 0xde, 0xad, 0xbe, 0xef };
+
+    for (int restore = 0; restore < 2; restore++) {
+        QTestState *qts = hera_init(restore ?
+            "-global atbm-hera-nor.restore-on-reset=on" : "");
+
+        program(qts, 0x1000, out, 4);
+        g_assert_cmphex(qtest_readl(qts, HERA_FLASH + 0x1000), ==, 0xefbeadde);
+        qtest_qmp_assert_success(qts, "{'execute': 'system_reset'}");
+        qtest_qmp_eventwait(qts, "RESET");
+        g_assert_cmphex(qtest_readl(qts, HERA_FLASH + 0x1000), ==,
+                        restore ? 0xffffffff : 0xefbeadde);
+        qtest_quit(qts);
+    }
+}
+
 /* a program wraps inside its 256-byte page */
 static void test_page_wrap(void)
 {
@@ -399,6 +418,7 @@ int main(int argc, char **argv)
     qtest_add_func("/atbm-hera/spi/block-erase", test_block_erase);
     qtest_add_func("/atbm-hera/spi/fast-reads", test_fast_reads);
     qtest_add_func("/atbm-hera/spi/xip", test_xip);
+    qtest_add_func("/atbm-hera/spi/restore-on-reset", test_restore_on_reset);
     qtest_add_func("/atbm-hera/spi/deep-power-down", test_deep_power_down);
     qtest_add_func("/atbm-hera/spi/end-interrupt", test_end_interrupt);
     qtest_add_func("/atbm-hera/spi/spi3-idle", test_spi3_idle);
