@@ -469,6 +469,7 @@ static void atbm_scan_done(void *opaque)
     /* status, power save mode, channels done, then busy ratios */
     uint8_t ind[4 + 2 + 14] = {};
 
+    /* a scan carried over from an older model owes its beacon still */
     if (c->scan_hit) {
         uint8_t b[WIFI_AP_BEACON_MAX];
 
@@ -486,13 +487,26 @@ static void atbm_scan(AtbmCore *c, uint16_t id, const uint8_t *b, size_t len)
 {
     unsigned n = len >= 12 ? b[9] : 0;
 
+    bool hit = false;
+
     c->scan_if = (id >> 6) & 0xf;
     c->scan_channels = n;
     c->scan_hit = false;
     for (unsigned i = 0; i < n && 12 + 16 * (i + 1) <= len; i++) {
         if (b[0] == 0 && lduw_le_p(b + 12 + 16 * i) == c->ap.channel) {
-            c->scan_hit = true;
+            hit = true;
         }
+    }
+    /*
+     * The access point is heard while the scan dwells on its channel, well
+     * before the scan ends: a host that hands received frames to a task of
+     * their own (the Hera's upper MAC) must see it before the completion
+     */
+    if (hit) {
+        uint8_t beacon[WIFI_AP_BEACON_MAX];
+
+        atbm_rx(c, c->scan_if, beacon, wifi_ap_beacon(&c->ap, beacon),
+                false, 0);
     }
     timer_mod(c->scan, qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) +
                        10 * MAX(n, 1));
