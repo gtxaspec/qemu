@@ -358,7 +358,7 @@ qtests_s390x = \
 
 qtests_riscv32 = \
   (config_all_devices.has_key('CONFIG_SIFIVE_E_AON') ? ['sifive-e-aon-watchdog-test'] : []) + \
-  (config_all_devices.has_key('CONFIG_ATBM6461') ? ['atbm6461-test'] : [])
+  (config_all_devices.has_key('CONFIG_ATBM6461') ? ['atbm6461-test', 'atbm6461-link-test'] : [])
 
 qtests_nds32 = \
   (config_all_devices.has_key('CONFIG_ATBM_HERA') ?

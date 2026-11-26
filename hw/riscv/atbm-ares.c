@@ -46,6 +46,9 @@
 #include "system/block-backend.h"
 #include "hw/core/or-irq.h"
 #include "hw/core/irq.h"
+#include "hw/core/cpu.h"
+#include "system/reset.h"
+#include "system/runstate.h"
 #include "hw/intc/sifive_plic.h"
 #include "hw/riscv/riscv_hart.h"
 #include "system/address-spaces.h"
@@ -98,6 +101,8 @@ struct Atbm6461State {
     MemoryRegion plicsw;
     qemu_irq plicsw_irq, yield_irq, *uart_irq;
     uint32_t uart_lvl;
+    uint32_t held;
+    qemu_irq *ctl;
     DeviceState *uart[3];
     uint32_t plicsw_pend, plicsw_en;
     DeviceState *plic;
@@ -118,6 +123,7 @@ static const struct {
 } mac_ready[] = {
     { 0x0a500a20, 0x80000000 },     /* the LMAC init waits for bit 31 */
     { 0x0ac3899c, 0x1 },            /* the TX calibration's done flag */
+    { 0x0acc017c, 0xb1 },           /* the chip version, 6461 */
 };
 
 /* and bits it waits to see clear */
@@ -373,12 +379,77 @@ static const MemoryRegionOps plicsw_ops = {
     .valid.max_access_size = 4,
 };
 
+/*
+ * Lines into the core: 0 the SDIO host's hold of the CPU in reset (HIF
+ * CONFIG[14]) and 3 its hold through the SMU's CPU_CTRL, 1 the camera SoC's
+ * hold (the chip off, or its reset pin, from the link), 2 the power-up after
+ * that, a reset of every device as a power cycle does. A hold stops the core
+ * and a release restarts it from the boot ROM's stand-in.
+ */
+static void ares_ctl(void *opaque, int n, int level)
+{
+    Atbm6461State *s = opaque;
+    uint32_t was = s->held;
+
+    if (n == 2) {
+        if (level) {
+            qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
+        }
+        return;
+    }
+    s->held = deposit32(s->held, n, 1, !!level);
+    if (!was && s->held) {
+        cpu_pause(CPU(&s->cpus.harts[0]));
+        cpu_reset(CPU(&s->cpus.harts[0]));
+    } else if (was && !s->held) {
+        cpu_reset(CPU(&s->cpus.harts[0]));
+        cpu_resume(CPU(&s->cpus.harts[0]));
+    }
+}
+
 static void ares_uart_irq(void *opaque, int n, int level)
 {
     Atbm6461State *s = opaque;
 
     s->uart_lvl = deposit32(s->uart_lvl, n, 1, level);
     qemu_set_irq(qdev_get_gpio_in(s->plic, 17), !!s->uart_lvl);
+}
+
+/*
+ * The SDIO slave (the 6441's HIF block, at the same address) and the link
+ * to a camera SoC's QEMU (-global atbm-hera-link.chardev=<id>; without a
+ * chardev the link does nothing). The HIF's interrupt to the host and the
+ * GPIO block's pads go through it, and it holds and resets the chip.
+ */
+static void ares_link(Atbm6461State *s, DeviceState *gpio)
+{
+    DeviceState *hif, *link = qdev_new("atbm-hera-link");
+    int i;
+
+    s->ctl = qemu_allocate_irqs(ares_ctl, s, 4);
+    /* the 6461's message buffers are named by word offsets */
+    hif = qdev_new("atbm-hera-hif");
+    qdev_prop_set_uint32(hif, "offset-shift", 2);
+    object_property_add_child(OBJECT(s), "hif", OBJECT(hif));
+    sysbus_realize_and_unref(SYS_BUS_DEVICE(hif), &error_fatal);
+    sysbus_mmio_map(SYS_BUS_DEVICE(hif), 0, 0x0ab00000);
+    ares_connect(s, hif, 0, 10);
+    qdev_connect_gpio_out_named(hif, "cpu-reset", 0, s->ctl[0]);
+    object_property_add_child(OBJECT(s), "link", OBJECT(link));
+    object_property_set_link(OBJECT(link), "hif", OBJECT(hif), &error_abort);
+    qdev_realize_and_unref(link, NULL, &error_fatal);
+    qdev_connect_gpio_out_named(hif, "host-irq", 0,
+                                qdev_get_gpio_in_named(link, "host-irq", 0));
+    for (i = 0; i < 28; i++) {
+        qdev_connect_gpio_out_named(gpio, "out", i,
+                                    qdev_get_gpio_in_named(link, "pad-out", i));
+        qdev_connect_gpio_out_named(link, "pad-in", i,
+                                    qdev_get_gpio_in_named(gpio, "pin", i));
+    }
+    qdev_connect_gpio_out_named(link, "hold", 0, s->ctl[1]);
+    qdev_connect_gpio_out_named(link, "reset", 0, s->ctl[2]);
+    /* the host also holds the core through the SMU's CPU_CTRL, by a window */
+    qdev_connect_gpio_out_named(s->smu, "cpu-hold", 0, s->ctl[3]);
 }
 
 static void ares_init(MachineState *machine)
@@ -521,6 +592,7 @@ static void ares_init(MachineState *machine)
     memory_region_add_subregion_overlap(sys, 0x16100000, &s->sys1, 1);
     ares_connect(s, dev, 1, 30);
     dev = ares_dev(s, "atbm-hera-gpio", "gpio", 0x16800000, 23, NULL);
+    ares_link(s, dev);
     sysbus_mmio_map(SYS_BUS_DEVICE(dev), 1, 0x17400000);
     dev = ares_dev(s, "atbm-hera-rtc", "rtc1", 0x16700000, 25, NULL);
     ares_connect(s, dev, 1, 26);
