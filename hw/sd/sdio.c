@@ -230,6 +230,9 @@ static void sdio_f0_write(SDIOCard *s, uint32_t addr, uint8_t val)
             s->blksz[fn] = (s->blksz[fn] & 0x00ff) | (val << 8);
             break;
         }
+        if (sc->f0_write) {
+            sc->f0_write(s, addr, val);
+        }
         return;
     }
     switch (addr) {
@@ -257,6 +260,9 @@ static void sdio_f0_write(SDIOCard *s, uint32_t addr, uint8_t val)
     case CCCR_SPEED:
         s->speed = val & SPEED_EHS;
         break;
+    }
+    if (sc->f0_write) {
+        sc->f0_write(s, addr, val);
     }
 }
 
