@@ -16,6 +16,7 @@
 #define TESTS_ATBM_HERA_TEST_H
 
 #include "libqtest.h"
+#include "qemu/bitops.h"
 
 #define HERA_ILM        0x00030000
 #define HERA_FLASH      0x00080000
@@ -58,6 +59,7 @@
 #define HERA_IRQ_RTC_A  26
 #define HERA_IRQ_PMU    30
 #define HERA_IRQ_UART3  31
+#define HERA_IRQ_NMI    32      /* the watchdogs' line, past the 32 */
 
 static inline QTestState *hera_init(const char *args)
 {

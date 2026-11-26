@@ -65,8 +65,12 @@ OBJECT_DECLARE_SIMPLE_TYPE(AtbmHeraIntSink, ATBM_HERA_INTSINK)
 #define SRAM_SIZE       (256 * KiB)
 #define FLASH_BOOT_LEN  0x10000
 
-/* A chip interrupt number is a CPU interrupt input (dev_int.h) */
+/*
+ * A chip interrupt number is a CPU interrupt input (dev_int.h); the
+ * watchdogs' interrupt is the CPU's NMI, one more sink input
+ */
 #define N_INTS          32
+#define NMI_IN          N_INTS
 
 /*
  * The place where the sources meet: the CPU's inputs are its outputs,
@@ -76,6 +80,7 @@ struct AtbmHeraIntSink {
     DeviceState parent_obj;
 
     qemu_irq out[N_INTS];
+    qemu_irq nmi;
     uint32_t levels;
 };
 
@@ -83,6 +88,10 @@ static void intsink_set(void *opaque, int n, int level)
 {
     AtbmHeraIntSink *s = opaque;
 
+    if (n == NMI_IN) {
+        qemu_set_irq(s->nmi, level);
+        return;
+    }
     s->levels = deposit32(s->levels, n, 1, !!level);
     qemu_set_irq(s->out[n], level);
 }
@@ -91,8 +100,9 @@ static void intsink_init(Object *obj)
 {
     AtbmHeraIntSink *s = ATBM_HERA_INTSINK(obj);
 
-    qdev_init_gpio_in(DEVICE(obj), intsink_set, N_INTS);
+    qdev_init_gpio_in(DEVICE(obj), intsink_set, N_INTS + 1);
     qdev_init_gpio_out_named(DEVICE(obj), s->out, "int", N_INTS);
+    qdev_init_gpio_out_named(DEVICE(obj), &s->nmi, "nmi", 1);
 }
 
 static void intsink_class_init(ObjectClass *oc, const void *data)
@@ -123,6 +133,7 @@ struct AtbmHeraMachine {
     AtbmHeraIntSink *ints;
     /* the interrupt numbers that two sources share, through an OR */
     DeviceState *pit_or;
+    DeviceState *nmi_or;
     uint32_t entry;
     bool wire_cpu;
 };
@@ -280,6 +291,12 @@ static void atbm_hera_init(MachineState *machine)
     dev = atbm_hera_dev(m, "atbm-hera-pit", "pit3", 0x17000000, -1, NULL);
     sysbus_connect_irq(SYS_BUS_DEVICE(dev), 0,
                        qdev_get_gpio_in(m->pit_or, 1));
+
+    m->nmi_or = atbm_hera_or(m, "nmi-or", 2, NMI_IN);
+    dev = atbm_hera_dev(m, "atbm-hera-wdt", "wdt1", 0x16600000, -1, NULL);
+    sysbus_connect_irq(SYS_BUS_DEVICE(dev), 0, qdev_get_gpio_in(m->nmi_or, 0));
+    dev = atbm_hera_dev(m, "atbm-hera-wdt", "wdt2", 0x17500000, -1, NULL);
+    sysbus_connect_irq(SYS_BUS_DEVICE(dev), 0, qdev_get_gpio_in(m->nmi_or, 1));
 
     if (machine->cpu_type) {
         cpu = CPU(cpu_create(machine->cpu_type));
