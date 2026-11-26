@@ -25,6 +25,20 @@
  * tool stores them, and __c_init copies them from flash: a segment's
  * memory size, not its file size, is what lands in the flash).
  *
+ * Boot from the flash: with a flash image and no -kernel the machine runs
+ * what the boot ROM does (the ROM is not in the SDK, so this is inferred
+ * from the SDK's flash layout in IOT_spec and from the bootloader files):
+ * the ROM reads the 36 byte boot_config at flash 0, requires config_valid
+ * 0xab45, and jumps to config_boot1_addr (0x401000: the bootloader at flash
+ * 0x1000 through the uncached XIP window), which then copies itself and the
+ * firmware to RAM. config_checksum (0x12341234 plus the byte sum of the
+ * eight words before it: true for all eight boot_harechip files) is checked
+ * and only reported: whether the ROM refuses a mismatch is not known. A
+ * ROM that refuses a header would enter its UART download mode: that is not
+ * modelled, the core stays stopped. The bootloader's code is linked at
+ * 0x01400000, a window on the flash from 0x1000 (its vector base and its
+ * data/rodata references; the 6461's bootloader is the same).
+ *
  * Copyright (C) 2026 Alfonso Gamboa <gtxent@gmail.com>
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
@@ -33,6 +47,7 @@
 #include "qemu/osdep.h"
 #include "qemu/units.h"
 #include "qemu/error-report.h"
+#include "qemu/log.h"
 #include "qapi/error.h"
 #include "elf.h"
 #include "hw/core/boards.h"
@@ -72,6 +87,13 @@ OBJECT_DECLARE_SIMPLE_TYPE(AtbmHeraIntSink, ATBM_HERA_INTSINK)
 #define SRAM_BASE       0x09000000
 #define SRAM_SIZE       (256 * KiB)
 #define FLASH_BOOT_LEN  0x10000
+#define BOOTWIN_BASE    0x01400000
+#define BOOTWIN_OFFSET  0x1000
+
+/* boot_config, flash 0: IOT_spec "boot_config" */
+#define BOOTCFG_VALID       0xab45
+#define BOOTCFG_WORDS       8
+#define BOOTCFG_CKSUM_SEED  0x12341234
 
 /*
  * A chip interrupt number is a CPU interrupt input (dev_int.h); the
@@ -138,6 +160,7 @@ struct AtbmHeraMachine {
     CPUState *cpu;
     MemoryRegion flash_cached;
     MemoryRegion flash_uncached;
+    MemoryRegion flash_bootwin;
     AtbmHeraIntSink *ints;
     /* the interrupt numbers that two sources share, through an OR */
     DeviceState *pit_or;
@@ -148,6 +171,8 @@ struct AtbmHeraMachine {
     qemu_irq *ctl;
     uint64_t hif_port;
     bool wire_cpu;
+    bool flash_boot;
+    bool rom_stopped;
 };
 
 static void atbm_hera_connect(AtbmHeraMachine *m, DeviceState *dev, int n,
@@ -291,11 +316,61 @@ static void atbm_hera_wire_cpu(AtbmHeraMachine *m)
     }
 }
 
-/* The CPU's reset puts its program counter at the ELF's entry */
+/*
+ * The boot ROM stand-in: the jump a valid boot_config asks for. Reads go
+ * through the uncached XIP window, which is how the ROM sees the flash.
+ */
+static void atbm_hera_rom_boot(AtbmHeraMachine *m)
+{
+    uint32_t cfg[BOOTCFG_WORDS + 1], sum = BOOTCFG_CKSUM_SEED;
+    int i;
+
+    if (address_space_read(&address_space_memory, XIPNC_BASE,
+                           MEMTXATTRS_UNSPECIFIED, cfg,
+                           sizeof(cfg)) != MEMTX_OK) {
+        goto fail;
+    }
+    for (i = 0; i < BOOTCFG_WORDS + 1; i++) {
+        cfg[i] = le32_to_cpu(cfg[i]);
+    }
+    for (i = 0; i < BOOTCFG_WORDS * 4; i++) {
+        sum += extract32(cfg[i / 4], (i % 4) * 8, 8);
+    }
+    if (cfg[0] != BOOTCFG_VALID) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "atbm-hera: boot ROM: flash 0 is not a boot_config "
+                      "(0x%x)\n", cfg[0]);
+        goto fail;
+    }
+    if (sum != cfg[BOOTCFG_WORDS]) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "atbm-hera: boot ROM: config_checksum 0x%x, 0x%x "
+                      "expected (booting anyway)\n", cfg[BOOTCFG_WORDS], sum);
+    }
+    if (!atbm_hera_in(cfg[2], 4, XIPNC_BASE, XIP_SIZE) &&
+        !atbm_hera_in(cfg[2], 4, XIP_BASE, XIP_SIZE)) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "atbm-hera: boot ROM: boot1 address 0x%x is not in "
+                      "the flash window\n", cfg[2]);
+        goto fail;
+    }
+    cpu_set_pc(m->cpu, cfg[2]);
+    return;
+fail:
+    m->rom_stopped = true;
+    cpu_pause(m->cpu);
+}
+
+/*
+ * The CPU's reset puts its program counter at the ELF's entry, or, booting
+ * from the flash, runs the ROM stand-in
+ */
 static void atbm_hera_cpu_restart(AtbmHeraMachine *m)
 {
     cpu_reset(m->cpu);
-    if (m->entry) {
+    if (m->flash_boot) {
+        atbm_hera_rom_boot(m);
+    } else if (m->entry) {
         cpu_set_pc(m->cpu, m->entry);
     }
 }
@@ -305,6 +380,10 @@ static void atbm_hera_cpu_reset(void *opaque)
     AtbmHeraMachine *m = opaque;
 
     if (m->cpu) {
+        if (m->rom_stopped) {
+            m->rom_stopped = false;
+            cpu_resume(m->cpu);
+        }
         if (m->held) {
             m->held = 0;
             cpu_resume(m->cpu);
@@ -446,6 +525,12 @@ static void atbm_hera_init(MachineState *machine)
     memory_region_set_readonly(&m->flash_uncached, true);
     memory_region_add_subregion(sysmem, XIPNC_BASE, &m->flash_uncached);
 
+    memory_region_init_alias(&m->flash_bootwin, NULL, "atbm-hera.flash-boot",
+                             &m->nor->array, BOOTWIN_OFFSET,
+                             m->nor->size - BOOTWIN_OFFSET);
+    memory_region_set_readonly(&m->flash_bootwin, true);
+    memory_region_add_subregion(sysmem, BOOTWIN_BASE, &m->flash_bootwin);
+
     atbm_hera_dev(m, "atbm-hera-uart", "uart1", 0x16200000, 19, chr0);
     atbm_hera_dev(m, "atbm-hera-uart", "uart2", 0x16300000, 20, chr1);
     atbm_hera_dev(m, "atbm-hera-uart", "uart3", 0x17600000, 31, serial_hd(2));
@@ -533,6 +618,8 @@ static void atbm_hera_init(MachineState *machine)
     }
     if (machine->kernel_filename) {
         atbm_hera_load_elf(m, machine->kernel_filename);
+    } else if (dinfo) {
+        m->flash_boot = true;
     }
     qemu_register_reset(atbm_hera_cpu_reset, m);
 }
