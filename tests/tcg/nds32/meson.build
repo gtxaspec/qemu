@@ -31,6 +31,10 @@ if 'qemu-system-nds32' in emulators
          depends: nds32_exc,
          suite: ['tcg', 'tcg-nds32'])
 
+    test('tcg-nds32-atbm-hera', find_program('run-hera.py'),
+         args: [nds32_qemu, nds32_cc],
+         suite: ['tcg', 'tcg-nds32'])
+
     foreach group: ['alu', 'imm', 'mul', 'div', 'mem', 'br', 'lsmw', 'stack',
                     'misc16', 'ifc', 'bytes', 'corner']
       test('tcg-nds32-' + group, find_program('run-diff.py'),
