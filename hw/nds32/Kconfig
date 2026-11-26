@@ -12,3 +12,5 @@ config ATBM_HERA
     select UNIMP
     select SSI
     select SD
+    select I2C
+    select AT24C

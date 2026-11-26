@@ -337,6 +337,7 @@ static void atbm_hera_init(MachineState *machine)
     if (m->hif_port) {
         sysbus_mmio_map(SYS_BUS_DEVICE(dev), 1, m->hif_port);
     }
+    atbm_hera_dev(m, "atbm-hera-i2c", "i2c", 0x16900000, 22, NULL);
     dev = atbm_hera_dev(m, "atbm-hera-smu", "smu", 0x16100000, 28, NULL);
     atbm_hera_connect(m, dev, 1, 30);
     dev = atbm_hera_dev(m, "atbm-hera-gpio", "gpio", 0x16800000, 23, NULL);
