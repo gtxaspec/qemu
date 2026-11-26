@@ -18,6 +18,11 @@
 #include "libqtest.h"
 #include "qemu/bitops.h"
 
+/* the CPU qtest gets for its address space: the riscv32 target's */
+#ifndef HERA_CPU
+#define HERA_CPU        "rv32"
+#endif
+
 #define HERA_ILM        0x00030000
 #define HERA_FLASH      0x00080000
 #define HERA_FLASH_NC   0x00400000
@@ -63,7 +68,7 @@
 
 static inline QTestState *hera_init(const char *args)
 {
-    QTestState *qts = qtest_initf("-machine atbm-hera -cpu rv32 %s",
+    QTestState *qts = qtest_initf("-machine atbm-hera -cpu " HERA_CPU " %s",
                                   args ? args : "");
 
     qtest_irq_intercept_in(qts, "/machine/intsink");

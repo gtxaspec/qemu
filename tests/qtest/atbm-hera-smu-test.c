@@ -152,7 +152,7 @@ static void test_wake(void)
 
 static void test_cpu_hold(void)
 {
-    QTestState *qts = qtest_init("-machine atbm-hera -cpu rv32");
+    QTestState *qts = qtest_init("-machine atbm-hera -cpu " HERA_CPU "");
 
     qtest_irq_intercept_out_named(qts, "/machine/smu", "cpu-hold");
     g_assert_false(qtest_get_irq(qts, 0));

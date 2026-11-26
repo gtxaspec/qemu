@@ -114,7 +114,7 @@ static void test_pull_and_pin(void)
 
 static void test_lines(void)
 {
-    QTestState *qts = qtest_init("-machine atbm-hera -cpu rv32");
+    QTestState *qts = qtest_init("-machine atbm-hera -cpu " HERA_CPU "");
 
     qtest_irq_intercept_out_named(qts, "/machine/gpio", "out");
     g_assert_false(qtest_get_irq(qts, 3));

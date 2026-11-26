@@ -248,7 +248,7 @@ static void test_timer16(void)
 static void test_pwm(void)
 {
     /* qtest watches one device's lines at a time: the PIT's outputs */
-    QTestState *qts = qtest_init("-machine atbm-hera -cpu rv32");
+    QTestState *qts = qtest_init("-machine atbm-hera -cpu " HERA_CPU "");
 
     qtest_irq_intercept_out_named(qts, "/machine/pit3", "pwm");
     g_assert_false(qtest_get_irq(qts, 1));

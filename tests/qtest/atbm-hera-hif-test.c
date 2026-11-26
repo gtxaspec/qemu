@@ -73,7 +73,7 @@ static QTestState *start(const char *extra)
     g_autofree char *args = g_strdup_printf("-machine atbm-hera,"
                                             "hif-host-port=0x%x %s", PORT,
                                             extra);
-    QTestState *qts = qtest_initf("-cpu rv32 %s", args);
+    QTestState *qts = qtest_initf("-cpu " HERA_CPU " %s", args);
 
     qtest_irq_intercept_in(qts, "/machine/intsink");
     return qts;
@@ -330,7 +330,7 @@ static void test_windows(void)
 static void test_cpu_reset(void)
 {
     QTestState *qts = qtest_init("-machine atbm-hera,hif-host-port=0xae00000 "
-                                 "-cpu rv32");
+                                 "-cpu " HERA_CPU "");
 
     qtest_irq_intercept_out_named(qts, "/machine/hif", "cpu-reset");
     g_assert_false(qtest_get_irq(qts, 0));
