@@ -156,6 +156,19 @@ static void periph_write(void *opaque, hwaddr addr, uint64_t val,
 {
     PeriphWin *w = opaque;
 
+    /*
+     * The EBM queues' pointer registers (+0x10 to +0x2f of each block of
+     * 0x200 from 0x0a560000, as far as 0x0a561fff) keep an offset
+     * into the descriptor memory at 0x18100000, though the firmware writes
+     * the address: its check adds the base to what it reads back. An empty
+     * queue then has head == tail, a zero next field and its +0x20 clear,
+     * and passes.
+     */
+    if (w->base + addr >= 0x0a560000 && w->base + addr < 0x0a562000 &&
+        (addr & 0x1ff) >= 0x10 && (addr & 0x1ff) < 0x30) {
+        val &= 0xfffff;
+    }
+
     qemu_log_mask(LOG_UNIMP, "atbm6461: write 0x%08" HWADDR_PRIx " <- 0x%"
                   PRIx64 "\n", w->base + addr, val);
     g_hash_table_insert(w->s->regs, GUINT_TO_POINTER(w->base + addr),
