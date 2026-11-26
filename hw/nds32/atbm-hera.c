@@ -625,7 +625,7 @@ static void atbm_hera_init(MachineState *machine)
     create_unimplemented_device("atbm-hera.smart", 0x0a540000, 0x20000);
     create_unimplemented_device("atbm-hera.pac-seq", 0x0a560000, 0x20000);
     atbm_hera_wifi_stub(m, "phy", 0x0ac00000, 0x100000);
-    atbm_hera_wifi_stub(m, "hash", 0x17200000, 0x1000);
+    atbm_hera_dev(m, "atbm-hera-crypto", "crypto", 0x17200000, -1, NULL);
     create_unimplemented_device("atbm-hera.wgt", 0x0ad00000, 0x100000);
 
     if (machine->cpu_type) {

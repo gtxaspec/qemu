@@ -15,8 +15,6 @@
  *   PHY   0x0acc017c reads 0x64: the chip version BSP_Init() stores
  *   PHY   0x0ac380f0 bit 4 set: PHY_RF_ComputeIQOffset() polls it (an RX
  *         calibration step is done)
- *   hash  0x17200028 bit 0 set: ATBM_hash_mac_get_status() polls it for
- *         "done" (the WPA key hashing engine; it computes nothing here)
  *
  * Copyright (C) 2026 Alfonso Gamboa <gtxent@gmail.com>
  *
@@ -46,7 +44,6 @@ typedef struct {
 static const StubRead stub_reads[] = {
     { 0x0a500a20, 0x80000000, 0 },
     { 0x0acc017c, 0x00000064, 0xffffffff },
-    { 0x17200028, 0x00000001, 0 },
     { 0x0ac380f0, 0x00000010, 0 },
 };
 

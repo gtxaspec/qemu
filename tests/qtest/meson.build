@@ -366,7 +366,8 @@ qtests_nds32 = \
     'atbm-hera-gpio-test', 'atbm-hera-smu-test',
     'atbm-hera-efuse-test', 'atbm-hera-spi-test',
     'atbm-hera-dmac-test', 'atbm-hera-hif-test',
-    'atbm-hera-i2c-test', 'atbm-hera-board-test'] : [])
+    'atbm-hera-i2c-test', 'atbm-hera-board-test',
+    'atbm-hera-crypto-test'] : [])
 
 qtests_riscv64 = ['riscv-csr-test'] + \
   (unpack_edk2_blobs ? ['bios-tables-test'] : []) + \
