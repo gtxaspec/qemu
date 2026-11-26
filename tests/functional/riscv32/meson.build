@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 
 tests_riscv32_system_quick = [
+  'atbm6461',
   'migration',
   'opensbi',
 ]
