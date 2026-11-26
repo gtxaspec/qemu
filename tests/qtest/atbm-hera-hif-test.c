@@ -320,7 +320,9 @@ static void test_windows(void)
     host_set(qts, F_CONFIG, CFG_PFETCH | BIT(10));
     g_assert_cmphex(host_reg(qts, F_CONFIG), ==, BIT(10));
 
-    /* chip registers are there too: the SMU's boot state */
+    /* chip registers are there too: an SMU register keeps what is written */
+    host_set(qts, F_BASE, HERA_SMU + 0x1028);
+    host_set(qts, F_AHB, 5);
     host_set(qts, F_BASE, HERA_SMU + 0x1028);
     w = host_reg(qts, F_AHB);
     g_assert_cmphex(w, ==, 5);

@@ -47,15 +47,15 @@ static void test_reset(void)
 {
     QTestState *qts = hera_init("");
 
-    g_assert_cmphex(rd(qts, BOOT_STATE), ==, 5);
+    g_assert_cmphex(rd(qts, BOOT_STATE), ==, 0);
     g_assert_cmphex(rd(qts, CLK_SEL), ==, 0);
     g_assert_cmphex(rd(qts, CLK_EN), ==, 0);
     g_assert_cmphex(rd(qts, CALIB_ST), ==, 0);
     g_assert_cmphex(rd(qts, STRAP), ==, 0);
     g_assert_cmphex(rd(qts, CPU_CTRL), ==, 0);
 
-    /* the bootrom's state is not for the firmware to change */
-    wr(qts, BOOT_STATE, 0);
+    /* nothing is known of it but that it keeps what is written */
+    wr(qts, BOOT_STATE, 5);
     g_assert_cmphex(rd(qts, BOOT_STATE), ==, 5);
     qtest_quit(qts);
 }

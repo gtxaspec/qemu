@@ -9,9 +9,15 @@
  *                      and 0x08c (the count) and 0x090 (the result) hold
  *                      NUM (0x088[9:0]) times 1221, the 40 MHz clocks in
  *                      a 32.768 kHz one; bit 0 clear clears the status
+ *   0x188  PLL_CTRL    bit 1 reads 1 once bit 31 has been written 1: the
+ *                      bootloader sets 31 and polls 1 (the lock, assumed
+ *                      to be a PLL's); the bootloader's use is all that
+ *                      is known of it
  *   0x1000 CPU_CTRL    bit 8 holds the CPU: the "cpu-hold" line
- *   0x1028 BOOT_STATE  reads 5, what the bootrom leaves when the chip is
- *                      up; writes are dropped
+ *   0x1028 BOOT_STATE  kept like any register: neither the bootloader
+ *                      nor the firmware's boot reads or writes it (it
+ *                      was preset to 5, "what the bootrom leaves", before
+ *                      the real bootloader was run and proved it unread)
  *   0x1030             read as 0: bit 3 clear makes the firmware start
  *                      its watchdog itself
  *   0x1400 .. 0x1418   AUXADC: with bit 0 of 0x1400 set 0x1418[9:0] holds
@@ -29,7 +35,7 @@
  * wake sequence and the interrupt lines (28, power control, and 30, PMU
  * wake): the "power" and "pmu" outputs stay low until Phase 4.
  * Assumptions: all of the above where it says "reads"; the calibration
- * is instant; reset values are 0 except 0x1028.
+ * is instant; reset values are 0.
  *
  * Copyright (C) 2026 Alfonso Gamboa <gtxent@gmail.com>
  *
@@ -53,17 +59,16 @@ OBJECT_DECLARE_SIMPLE_TYPE(AtbmHeraSmuState, ATBM_HERA_SMU)
 #define R_CALIB_CTRL    0x080
 #define R_CALIB_NUM     0x088
 #define R_CALIB_CNT     0x08c
+#define R_PLL_CTRL      0x188
 #define R_CALIB_SW      0x090
 #define R_CALIB_ST      0x098
 #define R_WAKE_CFG      0x1084
 #define R_WAKE_ST       0x1a0
 #define R_CPU_CTRL      0x1000
-#define R_BOOT_STATE    0x1028
 #define R_STRAP         0x1030
 #define R_ADC_CTRL      0x1400
 #define R_ADC_DATA      0x1418
 
-#define BOOT_STATE_READY 5
 #define CLKS_PER_32K    1221
 #define NWAKE           16
 
@@ -88,7 +93,8 @@ struct AtbmHeraSmuState {
 static const struct { uint16_t lo, hi; } smu_known[] = {
     { 0x008, 0x008 }, { 0x010, 0x024 }, { 0x038, 0x044 }, { 0x060, 0x064 },
     { 0x074, 0x098 }, { 0x0a0, 0x0d4 }, { 0x0e0, 0x0e8 }, { 0x13c, 0x140 },
-    { 0x1a0, 0x1a0 }, { 0x1c0, 0x1c0 }, { 0x1d8, 0x1d8 }, { 0x1ec, 0x1ec },
+    { 0x188, 0x188 }, { 0x1a0, 0x1a0 }, { 0x1c0, 0x1c0 }, { 0x1d8, 0x1d8 },
+    { 0x1ec, 0x1ec },
     { 0x258, 0x258 }, { 0x400, 0x400 }, { 0x1000, 0x1034 },
     { 0x105c, 0x1060 }, { 0x1070, 0x1070 }, { 0x1084, 0x1094 },
     { 0x10a4, 0x10b4 }, { 0x10bc, 0x10bc }, { 0x10d0, 0x10d0 },
@@ -125,10 +131,10 @@ static uint16_t smu_wake_status(AtbmHeraSmuState *s)
 static uint64_t smu_read_word(AtbmHeraSmuState *s, hwaddr addr)
 {
     switch (addr) {
-    case R_BOOT_STATE:
-        return BOOT_STATE_READY;
     case R_STRAP:
         return 0;
+    case R_PLL_CTRL:
+        return s->reg[R_PLL_CTRL / 4] | ((s->reg[R_PLL_CTRL / 4] >> 30) & 2);
     case R_WAKE_ST:
         return smu_wake_status(s);
     case R_ADC_DATA:
@@ -141,7 +147,6 @@ static uint64_t smu_read_word(AtbmHeraSmuState *s, hwaddr addr)
 static void smu_write_word(AtbmHeraSmuState *s, hwaddr addr, uint32_t val)
 {
     switch (addr) {
-    case R_BOOT_STATE:
     case R_WAKE_ST:
         return;
     case R_CALIB_CTRL:

@@ -45,9 +45,10 @@
  * mode and the slave mode, SCLK timing (a byte takes no time).
  * Assumptions: FIFO depths of 4 entries (HWCFG says so); the end interrupt
  * is raised when the last byte has been clocked; IFSET resets to what the
- * firmware's spi_init() writes (3-byte address, 8-bit data, no merge): the
- * SDK's flash driver reads the data port a byte per 32-bit access without
- * ever writing IFSET, so the bootrom must leave it that way.
+ * bootloader writes (0x20700: 3-byte address, 8-bit data, no merge) before
+ * it hands over: the SDK's flash driver reads the data port a byte per
+ * 32-bit access without ever writing IFSET. The chip's own reset value is
+ * not known; booting from the flash does not depend on this one.
  *
  * Copyright (C) 2026 Alfonso Gamboa <gtxent@gmail.com>
  *
