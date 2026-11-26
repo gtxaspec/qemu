@@ -67,6 +67,7 @@
 #include "system/reset.h"
 #include "system/runstate.h"
 #include "system/block-backend.h"
+#include "hw/misc/atbm-hera-link.h"
 #include "hw/misc/unimp.h"
 #include "system/address-spaces.h"
 #include "system/system.h"
@@ -171,6 +172,7 @@ struct AtbmHeraMachine {
     uint32_t entry;
     uint32_t held;
     qemu_irq *ctl;
+    qemu_irq chip_reset;        /* tells the link that the chip restarts */
     uint64_t hif_port;
     bool wire_cpu;
     bool flash_boot;
@@ -416,7 +418,9 @@ static void atbm_hera_cpu_reset(void *opaque)
  * it from the entry when released; 2 is the watchdogs' reset stage, a
  * restart. A flash boot runs the ROM stand-in again after each restart.
  * 3 is the camera SoC's hold (the chip off or its reset pin, from the
- * link) and 4 the power-up that follows it, a reset of every device.
+ * link) and 4 the power-up that follows it, a reset of every device. 5 is
+ * the watchdogs' last stage, which resets the machine: the link tells the
+ * SoC first.
  */
 
 static void atbm_hera_ctl(void *opaque, int n, int level)
@@ -433,6 +437,12 @@ static void atbm_hera_ctl(void *opaque, int n, int level)
     if (n == 4) {
         if (level) {
             qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
+        }
+        return;
+    }
+    if (n == 5) {
+        if (level) {
+            qemu_set_irq(m->chip_reset, AHL_CHIP_RESET_WDT);
         }
         return;
     }
@@ -480,6 +490,7 @@ static void atbm_hera_link(AtbmHeraMachine *m, DeviceState *hif,
         qdev_connect_gpio_out_named(dev, "pad-in", i,
                                     qdev_get_gpio_in_named(gpio, "pin", i));
     }
+    m->chip_reset = qdev_get_gpio_in_named(dev, "chip-reset", 0);
     qdev_connect_gpio_out_named(dev, "hold", 0, m->ctl[3]);
     qdev_connect_gpio_out_named(dev, "reset", 0, m->ctl[4]);
 }
@@ -591,7 +602,7 @@ static void atbm_hera_init(MachineState *machine)
                                 qdev_get_gpio_in_named(dmac, "req", 8));
     qdev_connect_gpio_out_named(dev, "dreq-rx", 0,
                                 qdev_get_gpio_in_named(dmac, "req", 9));
-    m->ctl = qemu_allocate_irqs(atbm_hera_ctl, m, 5);
+    m->ctl = qemu_allocate_irqs(atbm_hera_ctl, m, 6);
     dev = atbm_hera_dev(m, "atbm-hera-hif", "hif", 0x0ab00000, 10, NULL);
     hif = dev;
     qdev_connect_gpio_out_named(dev, "cpu-reset", 0, m->ctl[1]);
@@ -614,9 +625,11 @@ static void atbm_hera_init(MachineState *machine)
     dev = atbm_hera_dev(m, "atbm-hera-wdt", "wdt1", 0x16600000, -1, NULL);
     sysbus_connect_irq(SYS_BUS_DEVICE(dev), 0, qdev_get_gpio_in(m->nmi_or, 0));
     qdev_connect_gpio_out_named(dev, "cpu-reset", 0, m->ctl[2]);
+    qdev_connect_gpio_out_named(dev, "all-reset", 0, m->ctl[5]);
     dev = atbm_hera_dev(m, "atbm-hera-wdt", "wdt2", 0x17500000, -1, NULL);
     sysbus_connect_irq(SYS_BUS_DEVICE(dev), 0, qdev_get_gpio_in(m->nmi_or, 1));
     qdev_connect_gpio_out_named(dev, "cpu-reset", 0, m->ctl[2]);
+    qdev_connect_gpio_out_named(dev, "all-reset", 0, m->ctl[5]);
 
     /*
      * The Wi-Fi MAC and PHY: undocumented, out of scope here (a shim at

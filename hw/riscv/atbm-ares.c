@@ -41,6 +41,7 @@
 #include "hw/block/atbm-hera-nor.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/qdev-properties-system.h"
+#include "hw/misc/atbm-hera-link.h"
 #include "hw/misc/unimp.h"
 #include "hw/ssi/ssi.h"
 #include "system/block-backend.h"
@@ -105,6 +106,7 @@ struct Atbm6461State {
     uint32_t uart_lvl;
     uint32_t held;
     qemu_irq *ctl;
+    qemu_irq chip_reset;        /* tells the link that the chip restarts */
     DeviceState *uart[3];
     uint32_t plicsw_pend, plicsw_en;
     DeviceState *plic;
@@ -402,6 +404,7 @@ static void pads_write(void *opaque, hwaddr addr, uint64_t val,
     memory_region_dispatch_write(s->pads, addr, val, MO_32,
                                  MEMTXATTRS_UNSPECIFIED);
     if ((val & PADS24_25_MASK) == PADS24_25_RESET) {
+        qemu_set_irq(s->chip_reset, AHL_CHIP_RESET_REQUEST);
         qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
     }
 }
@@ -429,13 +432,21 @@ static const MemoryRegionOps pads_ops = {
  * CONFIG[14]) and 3 its hold through the SMU's CPU_CTRL, 1 the camera SoC's
  * hold (the chip off, or its reset pin, from the link), 2 the power-up after
  * that, a reset of every device as a power cycle does. A hold stops the core
- * and a release restarts it from the boot ROM's stand-in.
+ * and a release restarts it from the boot ROM's stand-in. 4 is the
+ * watchdogs' last stage, which resets the machine: the link tells the SoC
+ * first.
  */
 static void ares_ctl(void *opaque, int n, int level)
 {
     Atbm6461State *s = opaque;
     uint32_t was = s->held;
 
+    if (n == 4) {
+        if (level) {
+            qemu_set_irq(s->chip_reset, AHL_CHIP_RESET_WDT);
+        }
+        return;
+    }
     if (n == 2) {
         if (level) {
             qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
@@ -471,7 +482,7 @@ static void ares_link(Atbm6461State *s, DeviceState *gpio)
     DeviceState *hif, *link = qdev_new("atbm-hera-link");
     int i;
 
-    s->ctl = qemu_allocate_irqs(ares_ctl, s, 4);
+    s->ctl = qemu_allocate_irqs(ares_ctl, s, 5);
     /* the 6461's message buffers are named by word offsets */
     hif = qdev_new("atbm-hera-hif");
     qdev_prop_set_uint32(hif, "offset-shift", 2);
@@ -491,6 +502,7 @@ static void ares_link(Atbm6461State *s, DeviceState *gpio)
         qdev_connect_gpio_out_named(link, "pad-in", i,
                                     qdev_get_gpio_in_named(gpio, "pin", i));
     }
+    s->chip_reset = qdev_get_gpio_in_named(link, "chip-reset", 0);
     qdev_connect_gpio_out_named(link, "hold", 0, s->ctl[1]);
     qdev_connect_gpio_out_named(link, "reset", 0, s->ctl[2]);
     /* the host also holds the core through the SMU's CPU_CTRL, by a window */
@@ -645,8 +657,10 @@ static void ares_init(MachineState *machine)
     memory_region_add_subregion_overlap(sys, PADS24_25, &s->reboot, 1);
     dev = ares_dev(s, "atbm-hera-rtc", "rtc1", 0x16700000, 25, NULL);
     ares_connect(s, dev, 1, 26);
-    ares_dev(s, "atbm-hera-wdt", "wdt1", 0x16600000, -1, NULL);
-    ares_dev(s, "atbm-hera-wdt", "wdt2", 0x17500000, -1, NULL);
+    dev = ares_dev(s, "atbm-hera-wdt", "wdt1", 0x16600000, -1, NULL);
+    qdev_connect_gpio_out_named(dev, "all-reset", 0, s->ctl[4]);
+    dev = ares_dev(s, "atbm-hera-wdt", "wdt2", 0x17500000, -1, NULL);
+    qdev_connect_gpio_out_named(dev, "all-reset", 0, s->ctl[4]);
 
     memory_region_init_io(&s->plicsw, NULL, &plicsw_ops, s, "atbm6461.plicsw",
                           0x400000);

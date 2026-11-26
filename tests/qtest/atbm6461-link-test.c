@@ -31,6 +31,11 @@
 #define GPIO            0x16800000
 #define G_DIR0          0x28
 #define G_DOUT          0x24
+#define PADS_24_25      0x17400034
+#define WDT1            0x16600000
+#define WDT_CTRL        0x10
+#define WDT_WEN         0x18
+#define WDT_UNIT        0x20
 
 static void put(int fd, uint32_t type, uint32_t a, uint32_t b, uint32_t c,
                 const void *payload, size_t len)
@@ -154,10 +159,90 @@ static void test_link(void)
     qtest_quit(qts);
 }
 
+/* The chip tells the SoC when it restarts, if the SoC can take it */
+static void chip_up(const char *flash, const char *sock, uint32_t caps,
+                    QTestState **qts, int *fd)
+{
+    AtbmHeraLinkMsg m;
+
+    *qts = chip(flash, sock);
+    *fd = unix_connect(sock, &error_abort);
+    get(*fd, &m);
+    g_assert_cmpint(m.type, ==, AHL_HELLO);
+    put(*fd, AHL_HELLO, caps, 0, ATBM_HERA_LINK_VERSION, NULL, 0);
+}
+
+/* the CHIP_RESET that comes before the answer to a request, or 0 */
+static uint32_t next_chip_reset(int fd)
+{
+    AtbmHeraLinkMsg m;
+    uint32_t reason = 0;
+
+    put(fd, AHL_SDIO_READ, 1, F_CONFIG, 4 | ATBM_HERA_LINK_INCR, NULL, 0);
+    for (;;) {
+        uint8_t b[4];
+
+        get(fd, &m);
+        if (m.type == AHL_CHIP_RESET) {
+            g_assert_cmpuint(reason, ==, 0);
+            reason = m.a;
+        } else if (m.type == AHL_DATA) {
+            g_assert_cmpint(read(fd, b, 4), ==, 4);
+            return reason;
+        }
+    }
+}
+
+static void test_chip_reset(void)
+{
+    g_autofree char *flash = g_strdup_printf("%s/atbm6461-cr-%d.bin",
+                                             g_get_tmp_dir(), getpid());
+    g_autofree char *sock = g_strdup_printf("%s/atbm6461-cr-%d.sock",
+                                            g_get_tmp_dir(), getpid());
+    QTestState *qts;
+    int fd, flash_fd = open(flash, O_CREAT | O_RDWR, 0600);
+
+    g_assert_cmpint(flash_fd, >=, 0);
+    g_assert_cmpint(ftruncate(flash_fd, 4 * 1024 * 1024), ==, 0);
+    close(flash_fd);
+
+    /* a SoC without the capability is told nothing */
+    chip_up(flash, sock, 0, &qts, &fd);
+    qtest_writel(qts, PADS_24_25, 0x26082608);
+    qtest_qmp_eventwait(qts, "RESET");
+    g_assert_cmpuint(next_chip_reset(fd), ==, 0);
+    close(fd);
+    qtest_quit(qts);
+
+    chip_up(flash, sock, ATBM_HERA_LINK_CAP_CHIP_RESET, &qts, &fd);
+    /* the first word is that it has started */
+    g_assert_cmpuint(next_chip_reset(fd), ==, AHL_CHIP_RESET_COLD);
+
+    /* Hardware_Reboot()'s pads */
+    qtest_writel(qts, PADS_24_25, 0x26082608);
+    qtest_qmp_eventwait(qts, "RESET");
+    g_assert_cmpuint(next_chip_reset(fd), ==, AHL_CHIP_RESET_REQUEST);
+
+    /* the last stage of a watchdog: 64 clocks, then 16 and 16 */
+    qtest_writel(qts, WDT1 + WDT_WEN, 0x5aa5);
+    qtest_writel(qts, WDT1 + WDT_UNIT, 1 | 1 << 10 | 1 << 20);
+    qtest_writel(qts, WDT1 + WDT_WEN, 0x5aa5);
+    qtest_writel(qts, WDT1 + WDT_CTRL, 0x1 | 0x2 | 0x10);
+    qtest_clock_step(qts, 3000);
+    qtest_qmp_eventwait(qts, "RESET");
+    g_assert_cmpuint(next_chip_reset(fd), ==, AHL_CHIP_RESET_WDT);
+
+    close(fd);
+    unlink(sock);
+    unlink(flash);
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
 
     qtest_add_func("/atbm6461-link/hif", test_link);
+    qtest_add_func("/atbm6461-link/chip-reset", test_chip_reset);
     return g_test_run();
 }

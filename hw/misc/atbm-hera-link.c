@@ -10,6 +10,10 @@
  * while the chip is off or in reset, and "reset" pulses on power-up, when
  * the board resets every device as a power cycle does.
  *
+ * The "chip-reset" input is the board telling the SoC that the chip has
+ * restarted: its level is the reason (AHL_CHIP_RESET_*), and the SoC is told
+ * if it can take it.
+ *
  * Unlinked (no "chardev"), the device does nothing. A message that is not
  * for the chip is logged and dropped. While the chip is powered off the
  * SDIO function answers zeros.
@@ -49,6 +53,7 @@ struct AtbmHeraLinkState {
     Error *migration_blocker;
 
     bool hello;                 /* the SoC has said hello */
+    uint32_t soc_caps;          /* ATBM_HERA_LINK_CAP_* of the SoC */
     bool powered;
     bool reset_held;
     AtbmHeraLinkMsg rx;
@@ -105,6 +110,15 @@ static void link_pad_out(void *opaque, int n, int level)
     }
 }
 
+static void link_chip_reset(void *opaque, int n, int level)
+{
+    AtbmHeraLinkState *s = opaque;
+
+    if (level && link_up(s) && (s->soc_caps & ATBM_HERA_LINK_CAP_CHIP_RESET)) {
+        link_send(s, AHL_CHIP_RESET, level, 0, 0, NULL, 0);
+    }
+}
+
 static void link_set_hold(AtbmHeraLinkState *s)
 {
     qemu_set_irq(s->hold, !s->powered || s->reset_held);
@@ -120,6 +134,7 @@ static void link_hello(AtbmHeraLinkState *s)
         return;
     }
     s->hello = true;
+    s->soc_caps = le32_to_cpu(s->rx.a);
     link_send(s, AHL_IRQ, 0, 0, atbm_hera_hif_host_irq(s->hif), NULL, 0);
     for (int n = 0; n < ATBM_HERA_LINK_PADS; n++) {
         if (s->pad_seen & BIT(n)) {
@@ -127,6 +142,7 @@ static void link_hello(AtbmHeraLinkState *s)
                       NULL, 0);
         }
     }
+    link_chip_reset(s, 0, AHL_CHIP_RESET_COLD);
 }
 
 static void link_sdio(AtbmHeraLinkState *s, const AtbmHeraLinkMsg *m,
@@ -272,6 +288,7 @@ static void link_event(void *opaque, QEMUChrEvent event)
         break;
     case CHR_EVENT_CLOSED:
         s->hello = false;
+        s->soc_caps = 0;
         s->rx_len = s->pay_len = 0;
         break;
     default:
@@ -315,6 +332,7 @@ static void link_init(Object *obj)
     DeviceState *dev = DEVICE(obj);
 
     qdev_init_gpio_in_named(dev, link_host_irq, "host-irq", 1);
+    qdev_init_gpio_in_named(dev, link_chip_reset, "chip-reset", 1);
     qdev_init_gpio_in_named(dev, link_pad_out, "pad-out",
                             ATBM_HERA_LINK_PADS);
     qdev_init_gpio_out_named(dev, s->pad_in, "pad-in", ATBM_HERA_LINK_PADS);

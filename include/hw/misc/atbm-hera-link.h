@@ -21,6 +21,14 @@
  * returns with the interrupt line as the request left it. SDIO_CFG,
  * SDIO_RESET, PAD, POWER and RESET are not answered.
  *
+ * HELLO's a carries the sender's capability bits (0 from a peer that
+ * predates them), and a message type only a capability brings is not sent
+ * to a peer without it. CHIP_RESET is the chip telling the SoC that it
+ * has restarted or is about to (the board's chip reset, its watchdog's last
+ * stage), as the board's reset line or power cut does to the SoC on real
+ * hardware; the SoC decides what that does to it. A chip also sends it
+ * once after HELLO, with the reason COLD, when it has been started.
+ *
  * Copyright (C) 2026 Alfonso Gamboa <gtxent@gmail.com>
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
@@ -30,6 +38,14 @@
 #define HW_MISC_ATBM_HERA_LINK_H
 
 #define ATBM_HERA_LINK_VERSION  1
+
+/* HELLO's a, from the SoC: it takes CHIP_RESET */
+#define ATBM_HERA_LINK_CAP_CHIP_RESET   (1u << 0)
+
+/* in a of CHIP_RESET */
+#define AHL_CHIP_RESET_COLD     1   /* the chip has been powered on */
+#define AHL_CHIP_RESET_REQUEST  2   /* a reset the chip's firmware asked for */
+#define AHL_CHIP_RESET_WDT      3   /* the watchdog's all-reset stage */
 
 /* The chip's pads, as the GPIO block numbers them */
 #define ATBM_HERA_LINK_PADS     28
@@ -42,7 +58,7 @@
 
 enum {
     /* chip to SoC (HELLO both ways) */
-    AHL_HELLO = 1,          /* c: link version */
+    AHL_HELLO = 1,          /* a: capabilities, c: link version */
     AHL_DATA,               /* c: length, the payload follows */
     AHL_ACK,                /* the answer to an SDIO_WRITE */
     AHL_IRQ,                /* c: level of the SDIO interrupt to the host */
@@ -55,6 +71,8 @@ enum {
     AHL_RESET,              /* c: 1 the reset pin is held, 0 it is let go */
     /* both ways */
     AHL_PAD,                /* a: pad number, c: the level the sender drives */
+    /* chip to SoC, with ATBM_HERA_LINK_CAP_CHIP_RESET */
+    AHL_CHIP_RESET,         /* a: AHL_CHIP_RESET_* */
 };
 
 typedef struct AtbmHeraLinkMsg {
