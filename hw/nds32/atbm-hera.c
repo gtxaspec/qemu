@@ -48,6 +48,7 @@
 #include "hw/ssi/ssi.h"
 #include "system/blockdev.h"
 #include "system/reset.h"
+#include "system/runstate.h"
 #include "system/block-backend.h"
 #include "hw/misc/unimp.h"
 #include "system/address-spaces.h"
@@ -317,6 +318,8 @@ static void atbm_hera_cpu_reset(void *opaque)
  * host's reset (HIF CONFIG[14]) keep it in reset while high and restart
  * it from the entry when released; 2 is the watchdogs' reset stage, a
  * restart. No ROM runs after a restart: the stand-in is the entry point.
+ * 3 is the camera SoC's hold (the chip off or its reset pin, from the
+ * link) and 4 the power-up that follows it, a reset of every device.
  */
 
 static void atbm_hera_ctl(void *opaque, int n, int level)
@@ -327,6 +330,12 @@ static void atbm_hera_ctl(void *opaque, int n, int level)
     if (n == 2) {
         if (level && !was) {
             atbm_hera_cpu_restart(m);
+        }
+        return;
+    }
+    if (n == 4) {
+        if (level) {
+            qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
         }
         return;
     }
@@ -353,6 +362,31 @@ static void atbm_hera_wifi_stub(AtbmHeraMachine *m, const char *name,
     sysbus_mmio_map(SYS_BUS_DEVICE(dev), 0, base);
 }
 
+/*
+ * The link to a camera SoC's QEMU (-global atbm-hera-link.chardev=<id>):
+ * without a chardev it does nothing. The HIF's interrupt to the host and
+ * the GPIO block's pads go through it, and it holds and resets the chip.
+ */
+static void atbm_hera_link(AtbmHeraMachine *m, DeviceState *hif,
+                           DeviceState *gpio)
+{
+    DeviceState *dev = qdev_new("atbm-hera-link");
+
+    object_property_add_child(OBJECT(m), "link", OBJECT(dev));
+    object_property_set_link(OBJECT(dev), "hif", OBJECT(hif), &error_abort);
+    qdev_realize_and_unref(dev, NULL, &error_fatal);
+    qdev_connect_gpio_out_named(hif, "host-irq", 0,
+                                qdev_get_gpio_in_named(dev, "host-irq", 0));
+    for (int i = 0; i < 28; i++) {
+        qdev_connect_gpio_out_named(gpio, "out", i,
+                                    qdev_get_gpio_in_named(dev, "pad-out", i));
+        qdev_connect_gpio_out_named(dev, "pad-in", i,
+                                    qdev_get_gpio_in_named(gpio, "pin", i));
+    }
+    qdev_connect_gpio_out_named(dev, "hold", 0, m->ctl[3]);
+    qdev_connect_gpio_out_named(dev, "reset", 0, m->ctl[4]);
+}
+
 static void atbm_hera_init(MachineState *machine)
 {
     AtbmHeraMachine *m = ATBM_HERA_MACHINE(machine);
@@ -360,7 +394,7 @@ static void atbm_hera_init(MachineState *machine)
     Chardev *chr0 = serial_hd(0), *chr1 = serial_hd(1);
     DeviceState *dev;
     DriveInfo *dinfo = drive_get(IF_MTD, 0, 0);
-    DeviceState *spi1, *dmac;
+    DeviceState *spi1, *dmac, *hif;
 
     m->ints = ATBM_HERA_INTSINK(qdev_new(TYPE_ATBM_HERA_INTSINK));
     object_property_add_child(OBJECT(m), "intsink", OBJECT(m->ints));
@@ -454,8 +488,9 @@ static void atbm_hera_init(MachineState *machine)
                                 qdev_get_gpio_in_named(dmac, "req", 8));
     qdev_connect_gpio_out_named(dev, "dreq-rx", 0,
                                 qdev_get_gpio_in_named(dmac, "req", 9));
-    m->ctl = qemu_allocate_irqs(atbm_hera_ctl, m, 3);
+    m->ctl = qemu_allocate_irqs(atbm_hera_ctl, m, 5);
     dev = atbm_hera_dev(m, "atbm-hera-hif", "hif", 0x0ab00000, 10, NULL);
+    hif = dev;
     qdev_connect_gpio_out_named(dev, "cpu-reset", 0, m->ctl[1]);
     if (m->hif_port) {
         sysbus_mmio_map(SYS_BUS_DEVICE(dev), 1, m->hif_port);
@@ -466,6 +501,7 @@ static void atbm_hera_init(MachineState *machine)
     atbm_hera_connect(m, dev, 1, 30);
     dev = atbm_hera_dev(m, "atbm-hera-gpio", "gpio", 0x16800000, 23, NULL);
     sysbus_mmio_map(SYS_BUS_DEVICE(dev), 1, 0x17400000);
+    atbm_hera_link(m, hif, dev);
     dev = atbm_hera_dev(m, "atbm-hera-rtc", "rtc1", 0x16700000, 25, NULL);
     atbm_hera_connect(m, dev, 1, 26);
     dev = atbm_hera_dev(m, "atbm-hera-rtc", "rtc2", 0x17100000, 15, NULL);
