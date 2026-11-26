@@ -253,7 +253,7 @@ static void atbm_hera_init(MachineState *machine)
     CPUState *cpu = NULL;
     DeviceState *dev;
     DriveInfo *dinfo = drive_get(IF_MTD, 0, 0);
-    DeviceState *spi1;
+    DeviceState *spi1, *dmac;
 
     m->ints = ATBM_HERA_INTSINK(qdev_new(TYPE_ATBM_HERA_INTSINK));
     object_property_add_child(OBJECT(m), "intsink", OBJECT(m->ints));
@@ -318,7 +318,20 @@ static void atbm_hera_init(MachineState *machine)
                        qdev_get_gpio_in(m->pit_or, 1));
 
     atbm_hera_dev(m, "atbm-hera-efuse", "efuse", 0x16b00000, -1, NULL);
+    /*
+     * The DMA controller: the SPIs' request lines are the data sheet's
+     * numbers (SPI1 TX 6, RX 7, SPI3 TX 8, RX 9; SPI2 TX 4, RX 5)
+     */
+    dmac = atbm_hera_dev(m, "atbm-hera-dmac", "dmac", 0x14000000, 7, NULL);
+    qdev_connect_gpio_out_named(spi1, "dreq-tx", 0,
+                                qdev_get_gpio_in_named(dmac, "req", 6));
+    qdev_connect_gpio_out_named(spi1, "dreq-rx", 0,
+                                qdev_get_gpio_in_named(dmac, "req", 7));
     dev = atbm_hera_dev(m, "atbm-hera-spi", "spi3", 0x16d00000, 13, NULL);
+    qdev_connect_gpio_out_named(dev, "dreq-tx", 0,
+                                qdev_get_gpio_in_named(dmac, "req", 8));
+    qdev_connect_gpio_out_named(dev, "dreq-rx", 0,
+                                qdev_get_gpio_in_named(dmac, "req", 9));
     dev = atbm_hera_dev(m, "atbm-hera-smu", "smu", 0x16100000, 28, NULL);
     atbm_hera_connect(m, dev, 1, 30);
     dev = atbm_hera_dev(m, "atbm-hera-gpio", "gpio", 0x16800000, 23, NULL);

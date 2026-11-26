@@ -527,6 +527,11 @@ static void spi_realize(DeviceState *dev, Error **errp)
     s->ssi = ssi_create_bus(dev, "ssi");
     memory_region_init_io(&s->iomem, OBJECT(dev), &spi_ops, s,
                           TYPE_ATBM_HERA_SPI, SPI_SIZE);
+    /*
+     * A DMA request raised by a register access is served at once, by
+     * the controller reading or writing the FIFO port: the access nests
+     */
+    s->iomem.disable_reentrancy_guard = true;
     sysbus_init_mmio(SYS_BUS_DEVICE(dev), &s->iomem);
 }
 
