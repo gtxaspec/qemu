@@ -1,0 +1,78 @@
+#
+# Andes performance extension (XAndesPerf), as the AndeStar V5 cores of the
+# ATBM6461 run it: GP-relative loads and stores, bit branches, bitfield
+# extract, scaled address and byte-search instructions, in the custom-0,
+# custom-1 and custom-2 opcodes. EXEC.IT is decoded by hand in translate.c.
+#
+# Copyright (C) 2026 Alfonso Gamboa <gtxent@gmail.com>
+#
+# SPDX-License-Identifier: GPL-2.0-or-later
+
+# The signed 18-bit GP offset is scattered; the byte, halfword and word forms
+# scale a shorter field.
+%gp_lb     31:s1 15:2 17:3 20:1 21:10 14:1
+%gp_lh     31:s1 15:2 17:3 20:1 21:10          !function=ex_shift_1
+%gp_lw     31:s1 21:1 15:2 17:3 20:1 22:9      !function=ex_shift_2
+%gp_sb     31:s1 15:2 17:3 7:1 25:6 8:4 14:1
+%gp_sh     31:s1 15:2 17:3 7:1 25:6 8:4        !function=ex_shift_1
+%gp_sw     31:s1 8:1 15:2 17:3 7:1 25:6 9:3    !function=ex_shift_2
+%rs1       15:5
+%msb       26:6
+%lsb       20:6
+%rs2       20:5
+%rd        7:5
+%b_imm     31:s1 25:5 8:4                      !function=ex_shift_1
+%b_cimm    30:1 7:1 20:5
+%bb_cimm   20:5
+
+&i         imm rs1 rd                          !extern
+&s         imm rs1 rs2                         !extern
+&r         rd rs1 rs2                          !extern
+&bc        rs1 cimm imm
+&bf        rd rs1 msb lsb
+
+@gp_ld_b   ................. . .. ..... ....... &i imm=%gp_lb rs1=3 %rd
+@gp_ld_h   ................. . .. ..... ....... &i imm=%gp_lh rs1=3 %rd
+@gp_ld_w   ................. . .. ..... ....... &i imm=%gp_lw rs1=3 %rd
+@gp_st_b   ................. . .. ..... ....... &s imm=%gp_sb rs1=3 %rs2
+@gp_st_h   ................. . .. ..... ....... &s imm=%gp_sh rs1=3 %rs2
+@gp_st_w   ................. . .. ..... ....... &s imm=%gp_sw rs1=3 %rs2
+@bc        . . ..... ..... ..... ... .... . ....... &bc imm=%b_imm %rs1 cimm=%b_cimm
+@bbc       . . ..... ..... ..... ... .... . ....... &bc imm=%b_imm %rs1 cimm=%bb_cimm
+@bf        ...... ...... ..... ... ..... ....... &bf %rd %rs1 msb=%msb lsb=%lsb
+@r         .......  ..... ..... ... ..... ....... &r %rs2 %rs1 %rd
+
+
+# custom-0
+lbgp       ................. . 00 ..... 0001011 @gp_ld_b
+addigp     ................. . 01 ..... 0001011 @gp_ld_b
+lbugp      ................. . 10 ..... 0001011 @gp_ld_b
+sbgp       ................. . 11 ..... 0001011 @gp_st_b
+
+# custom-1
+shgp       ................. 000 ..... 0101011 @gp_st_h
+lhgp       ................. 001 ..... 0101011 @gp_ld_h
+lwgp       ................. 010 ..... 0101011 @gp_ld_w
+swgp       ................. 100 ..... 0101011 @gp_st_w
+lhugp      ................. 101 ..... 0101011 @gp_ld_h
+lwugp      ................. 110 ..... 0101011 @gp_ld_w
+
+# custom-2
+bfoz       ...... ...... ..... 010 ..... 1011011 @bf
+bfos       ...... ...... ..... 011 ..... 1011011 @bf
+beqc       . . ..... ..... ..... 101 .... . 1011011 @bc
+bnec       . . ..... ..... ..... 110 .... . 1011011 @bc
+bbc        . 0 ..... ..... ..... 111 .... 0 1011011 @bbc
+bbs        . 1 ..... ..... ..... 111 .... 0 1011011 @bbc
+
+lea_h      0000101 ..... ..... 000 ..... 1011011 @r
+lea_w      0000110 ..... ..... 000 ..... 1011011 @r
+lea_d      0000111 ..... ..... 000 ..... 1011011 @r
+lea_b_ze   0001000 ..... ..... 000 ..... 1011011 @r
+lea_h_ze   0001001 ..... ..... 000 ..... 1011011 @r
+lea_w_ze   0001010 ..... ..... 000 ..... 1011011 @r
+lea_d_ze   0001011 ..... ..... 000 ..... 1011011 @r
+ffb        0010000 ..... ..... 000 ..... 1011011 @r
+ffzmism    0010001 ..... ..... 000 ..... 1011011 @r
+ffmism     0010010 ..... ..... 000 ..... 1011011 @r
+flmism     0010011 ..... ..... 000 ..... 1011011 @r

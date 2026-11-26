@@ -1401,3 +1401,6 @@ DEF_HELPER_5(sf_vqmaccsu_2x8x2, void, ptr, ptr, ptr, env, i32)
 DEF_HELPER_FLAGS_4(aie_vop, TCG_CALL_NO_RWG, void, env, i32, i32, tl)
 DEF_HELPER_4(aie_ld, void, env, i32, i32, tl)
 DEF_HELPER_4(aie_st, void, env, i32, i32, tl)
+
+/* Andes XAndesPerf byte search */
+DEF_HELPER_FLAGS_3(andes_find, TCG_CALL_NO_RWG_SE, tl, i32, tl, tl)

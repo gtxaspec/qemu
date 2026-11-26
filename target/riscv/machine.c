@@ -153,6 +153,24 @@ static const VMStateDescription vmstate_aie = {
     }
 };
 
+static bool andes_needed(void *opaque)
+{
+    RISCVCPU *cpu = opaque;
+
+    return cpu->cfg.ext_xandesperf;
+}
+
+static const VMStateDescription vmstate_andes = {
+    .name = "cpu/andes",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = andes_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32_ARRAY(env.andes_csr, RISCVCPU, ANDES_NCSR),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 static bool vector_needed(void *opaque)
 {
     RISCVCPU *cpu = opaque;
@@ -658,6 +676,7 @@ const VMStateDescription vmstate_riscv_cpu = {
         &vmstate_hyper,
         &vmstate_vector,
         &vmstate_aie,
+        &vmstate_andes,
         &vmstate_pointermasking,
         &vmstate_rv128,
 #ifdef CONFIG_KVM

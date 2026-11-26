@@ -1227,6 +1227,7 @@ static uint32_t opcode_at(DisasContextBase *dcbase, target_ulong pc)
 #include "decode-xlrbr.c.inc"
 #include "decode-xsf.c.inc"
 #include "decode-xingenicaie.c.inc"
+#include "decode-xandesperf.c.inc"
 #include "xingenicaie.h"
 #include "insn_trans/trans_xthead.c.inc"
 #include "insn_trans/trans_xventanacondops.c.inc"
@@ -1234,6 +1235,7 @@ static uint32_t opcode_at(DisasContextBase *dcbase, target_ulong pc)
 #include "insn_trans/trans_xlrbr.c.inc"
 #include "insn_trans/trans_xsf.c.inc"
 #include "insn_trans/trans_xingenicaie.c.inc"
+#include "insn_trans/trans_xandesperf.c.inc"
 
 /* Include the auto-generated decoder for 16 bit insn */
 #include "decode-insn16.c.inc"
@@ -1256,6 +1258,7 @@ const RISCVDecoder decoder_table[] = {
     { has_xlrbr_p, decode_xlrbr},
     { has_xsf_p, decode_xsf },
     { has_xingenicaie_p, decode_xingenicaie },
+    { has_xandesperf_p, decode_xandesperf },
 };
 
 const size_t decoder_table_size = ARRAY_SIZE(decoder_table);
@@ -1296,6 +1299,10 @@ static void decode_opc(CPURISCVState *env, DisasContext *ctx)
          * The Zca extension is added as way to refer to instructions in the C
          * extension that do not include the floating-point loads and stores
          */
+        if (ctx->cfg_ptr->ext_xandesperf && (opcode & 0xe083) == 0x8000 &&
+            trans_exec_it(ctx, opcode)) {
+            return;
+        }
         if ((has_ext(ctx, RVC) || ctx->cfg_ptr->ext_zca) &&
             decode_insn16(ctx, opcode)) {
             return;

@@ -134,3 +134,33 @@ target_ulong HELPER(crc32c)(target_ulong rs1, target_ulong sz)
 
     return rs1;
 }
+
+/* Andes FFB, FFZMISM, FFMISM and FLMISM: which byte of a word matches */
+target_ulong HELPER(andes_find)(uint32_t kind, target_ulong rs1,
+                                target_ulong rs2)
+{
+    int i;
+
+    for (i = 0; i < 4; i++) {
+        int n = kind == 3 ? 3 - i : i;
+        uint8_t a = rs1 >> (8 * n);
+        uint8_t b = rs2 >> (8 * n);
+        bool hit;
+
+        switch (kind) {
+        case 0:
+            hit = a == (uint8_t)rs2;
+            break;
+        case 1:
+            hit = a == 0 || a == b;
+            break;
+        default:
+            hit = a != b;
+            break;
+        }
+        if (hit) {
+            return (target_long)(n - 4);
+        }
+    }
+    return 0;
+}

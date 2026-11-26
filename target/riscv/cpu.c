@@ -300,6 +300,7 @@ const RISCVIsaExtData isa_edata_arr[] = {
     ISA_EXT_DATA_ENTRY(svrsw60t59b, PRIV_VERSION_1_13_0, ext_svrsw60t59b),
     ISA_EXPERIMENTAL_EXT_DATA_ENTRY(svukte, PRIV_VERSION_1_13_0, ext_svukte),
     ISA_EXT_DATA_ENTRY(svvptc, PRIV_VERSION_1_13_0, ext_svvptc),
+    ISA_EXT_DATA_ENTRY(xandesperf, PRIV_VERSION_1_11_0, ext_xandesperf),
     ISA_EXT_DATA_ENTRY(xingenicaie, PRIV_VERSION_1_11_0, ext_xingenicaie),
     ISA_EXT_DATA_ENTRY(xlrbr, PRIV_VERSION_1_13_0, ext_xlrbr),
     ISA_EXT_DATA_ENTRY(xmipscbop, PRIV_VERSION_1_12_0, ext_xmipscbop),
@@ -3638,6 +3639,24 @@ static const TypeInfo riscv_cpu_type_infos[] = {
         .cfg.mimpid = 0x010a0202,
 #if defined(CONFIG_TCG) && !defined(CONFIG_USER_ONLY)
         .custom_csrs = ingenic_little_csr_list,
+#endif
+    ),
+
+    /*
+     * The ATBM6461's AndeStar V5 core: RV32IMC with Andes' performance
+     * extension and EXEC.IT. Which Andes core it is was not read.
+     */
+    DEFINE_RISCV_CPU(TYPE_RISCV_CPU_ANDES_ARES, TYPE_RISCV_VENDOR_CPU,
+        .misa_mxl_max = MXL_RV32,
+        .misa_ext = RVI | RVM | RVC,
+        .priv_spec = PRIV_VERSION_1_11_0,
+        .cfg.max_satp_mode = VM_1_10_MBARE,
+        .cfg.ext_zifencei = true,
+        .cfg.ext_zicsr = true,
+        .cfg.ext_xandesperf = true,
+        .cfg.pmp = true,
+#if defined(CONFIG_TCG) && !defined(CONFIG_USER_ONLY)
+        .custom_csrs = andes_csr_list,
 #endif
     ),
 

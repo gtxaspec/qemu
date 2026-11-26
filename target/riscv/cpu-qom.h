@@ -50,6 +50,7 @@
 #define TYPE_RISCV_CPU_INGENIC_VICTORY0 RISCV_CPU_TYPE_NAME("ingenic-victory0")
 #define TYPE_RISCV_CPU_INGENIC_LITTLE \
     RISCV_CPU_TYPE_NAME("ingenic-t41-little")
+#define TYPE_RISCV_CPU_ANDES_ARES       RISCV_CPU_TYPE_NAME("andes-ares")
 #define TYPE_RISCV_CPU_SHAKTI_C         RISCV_CPU_TYPE_NAME("shakti-c")
 #define TYPE_RISCV_CPU_SIFIVE_E         RISCV_CPU_TYPE_NAME("sifive-e")
 #define TYPE_RISCV_CPU_SIFIVE_E31       RISCV_CPU_TYPE_NAME("sifive-e31")

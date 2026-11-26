@@ -37,6 +37,8 @@
 
 typedef struct CPUArchState CPURISCVState;
 
+#define ANDES_NCSR 40
+
 #define CPU_RESOLVING_TYPE TYPE_RISCV_CPU
 
 #if defined(TARGET_RISCV32)
@@ -268,6 +270,9 @@ struct CPUArchState {
     /* Ingenic AIE (XIngenicAIE): vp0 to vp31, pr0 to pr3 */
     uint8_t aie_vp[32][AIE_VLENB] QEMU_ALIGNED(16);
     uint16_t aie_pr[4];
+
+    /* Andes custom CSRs (andes_csr.c) */
+    uint32_t andes_csr[ANDES_NCSR];
 
     uint64_t pc;
     uint64_t load_res;

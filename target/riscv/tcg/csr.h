@@ -87,6 +87,9 @@ extern const RISCVCSR th_csr_list[];
 /* Implemented in mips_csr.c */
 extern const RISCVCSR mips_csr_list[];
 
+/* In andes_csr.c */
+extern const RISCVCSR andes_csr_list[];
+
 /* In ingenic_csr.c */
 extern const RISCVCSR ingenic_t31_csr_list[];
 extern const RISCVCSR ingenic_t23_csr_list[];
