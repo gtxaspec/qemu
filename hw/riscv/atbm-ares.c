@@ -99,6 +99,8 @@ struct Atbm6461State {
     DeviceState *smu;
     int64_t cnt_start;
     MemoryRegion plicsw;
+    MemoryRegion reboot;
+    MemoryRegion *pads;
     qemu_irq plicsw_irq, yield_irq, *uart_irq;
     uint32_t uart_lvl;
     uint32_t held;
@@ -380,6 +382,49 @@ static const MemoryRegionOps plicsw_ops = {
 };
 
 /*
+ * The firmware's Hardware_Reboot() (the stock image's system_reboot() ends
+ * in it) prints, then sets the pad function of pins 24 and 25 to 8 with one
+ * write of 0x26082608 to 0x17400034 and spins. A guess from that code and
+ * its name: those pads drive the chip's own reset, so the chip restarts.
+ * Boot never writes this function there. The dev's clean image stubs the
+ * call out, and its chip then sits in the trap handler.
+ */
+#define PADS_BASE         0x17400000
+#define PADS24_25         (PADS_BASE + 0x34)
+#define PADS24_25_RESET   0x00080008
+#define PADS24_25_MASK    0x000f000f
+
+static void pads_write(void *opaque, hwaddr addr, uint64_t val,
+                       unsigned size)
+{
+    Atbm6461State *s = opaque;
+
+    memory_region_dispatch_write(s->pads, addr, val, MO_32,
+                                 MEMTXATTRS_UNSPECIFIED);
+    if ((val & PADS24_25_MASK) == PADS24_25_RESET) {
+        qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
+    }
+}
+
+static uint64_t pads_read(void *opaque, hwaddr addr, unsigned size)
+{
+    Atbm6461State *s = opaque;
+    uint64_t val = 0;
+
+    memory_region_dispatch_read(s->pads, addr, &val, MO_32,
+                                MEMTXATTRS_UNSPECIFIED);
+    return val;
+}
+
+static const MemoryRegionOps pads_ops = {
+    .read = pads_read,
+    .write = pads_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid.min_access_size = 4,
+    .valid.max_access_size = 4,
+};
+
+/*
  * Lines into the core: 0 the SDIO host's hold of the CPU in reset (HIF
  * CONFIG[14]) and 3 its hold through the SMU's CPU_CTRL, 1 the camera SoC's
  * hold (the chip off, or its reset pin, from the link), 2 the power-up after
@@ -593,7 +638,11 @@ static void ares_init(MachineState *machine)
     ares_connect(s, dev, 1, 30);
     dev = ares_dev(s, "atbm-hera-gpio", "gpio", 0x16800000, 23, NULL);
     ares_link(s, dev);
-    sysbus_mmio_map(SYS_BUS_DEVICE(dev), 1, 0x17400000);
+    sysbus_mmio_map(SYS_BUS_DEVICE(dev), 1, PADS_BASE);
+    s->pads = sysbus_mmio_get_region(SYS_BUS_DEVICE(dev), 1);
+    memory_region_init_io(&s->reboot, NULL, &pads_ops, s, "atbm6461.pads24",
+                          4);
+    memory_region_add_subregion_overlap(sys, PADS24_25, &s->reboot, 1);
     dev = ares_dev(s, "atbm-hera-rtc", "rtc1", 0x16700000, 25, NULL);
     ares_connect(s, dev, 1, 26);
     ares_dev(s, "atbm-hera-wdt", "wdt1", 0x16600000, -1, NULL);

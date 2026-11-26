@@ -21,6 +21,7 @@
 #define UART_FCR        (UART2 + 0x28)
 #define UART_LSR        (UART2 + 0x34)
 #define PLIC_PENDING    0xe4001000
+#define PADS_24_25      0x17400034      /* the pad functions of pins 24, 25 */
 
 static char *make_flash(void)
 {
@@ -89,12 +90,37 @@ static void test_rx_bits(void)
     unlink(flash);
 }
 
+/* Hardware_Reboot() writes function 8 to pins 24 and 25: the chip restarts */
+static void test_reboot_pads(void)
+{
+    g_autofree char *flash = make_flash();
+    QTestState *qts = start(flash, "-serial null -serial null");
+
+    qtest_writel(qts, SMU_YIELD, 1);
+    g_assert_cmphex(qtest_readl(qts, PLIC_PENDING) & (1u << 27), ==,
+                    1u << 27);
+
+    /* one pin alone, and other functions, change nothing but the pad */
+    qtest_writel(qts, PADS_24_25, 0x00000008);
+    g_assert_cmphex(qtest_readl(qts, PADS_24_25), ==, 0x00000008);
+    qtest_writel(qts, PADS_24_25, 0x00030003);
+    g_assert_cmphex(qtest_readl(qts, PLIC_PENDING) & (1u << 27), ==,
+                    1u << 27);
+
+    qtest_writel(qts, PADS_24_25, 0x26082608);
+    qtest_qmp_eventwait(qts, "RESET");
+    g_assert_cmphex(qtest_readl(qts, PLIC_PENDING) & (1u << 27), ==, 0);
+    qtest_quit(qts);
+    unlink(flash);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
 
     qtest_add_func("/atbm6461/smu/yield", test_yield);
     qtest_add_func("/atbm6461/smu/uart-rx-bits", test_rx_bits);
+    qtest_add_func("/atbm6461/pads/reboot", test_reboot_pads);
 
     return g_test_run();
 }
