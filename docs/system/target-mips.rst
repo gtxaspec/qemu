@@ -148,6 +148,34 @@ binaries, covers video, audio, SPI NOR and NAND, the test inputs
 trace events (``-trace 'ingenic_isp_*'``, read with ``isp-trace.py``)
 and Wi-Fi in detail.
 
+ATBM6441 with its own firmware
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``-device atbm6441`` models the chip's behaviour from the host's side. To
+run the chip's own firmware instead, start it in ``qemu-system-nds32``
+(machine ``atbm-hera``, ``-kernel <firmware ELF>``) with a link socket
+and give the camera's QEMU the matching card. The chip is the server, so
+start it first::
+
+   qemu-system-nds32 -M atbm-hera -display none -kernel iot.out \
+       -chardev socket,id=hl,path=/tmp/hera.link,server=on,wait=off \
+       -global atbm-hera-link.chardev=hl \
+       -chardev socket,id=hu,path=/tmp/hera.uart,server=on,wait=off \
+       -serial chardev:hu -serial stdio
+   qemu-system-mipsel -M ingenic-t23 ... \
+       -chardev socket,id=hl,path=/tmp/hera.link \
+       -chardev socket,id=mcu,path=/tmp/hera.uart -serial chardev:mcu \
+       -device atbm-hera-link-sdio,bus=msc1,chardev=hl
+
+The card forwards SDIO function 1 and the vendor area of function 0 to
+the chip's HIF block, takes the SDIO interrupt from it, and tells it of
+CCCR and FBR writes. The UART between them is a plain chardev socket,
+the camera's UART0 to the chip's UART1. ``power-pin``, ``reset-pin``,
+``from-chip`` and ``to-chip`` (pins as ``32 * port + bit``, chip pads as
+the chip's GPIO numbers) wire the camera's GPIO block to the chip's power,
+reset and pads; the same lines are named gpios of the card. The protocol
+is in ``include/hw/misc/atbm-hera-link.h``.
+
 Example - boot a flash image::
 
    qemu-system-mipsel -M ingenic-t31 -m 256M -display none \
