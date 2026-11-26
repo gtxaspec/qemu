@@ -10,6 +10,3 @@
 # CONFIG_SIFIVE_U=n
 # CONFIG_RISCV_VIRT=n
 # CONFIG_OPENTITAN=n
-
-# The ATBM6441 "Hera" machine, with no CPU until target/nds32 exists
-CONFIG_ATBM_HERA=y

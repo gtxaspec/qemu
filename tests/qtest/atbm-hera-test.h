@@ -18,9 +18,9 @@
 #include "libqtest.h"
 #include "qemu/bitops.h"
 
-/* the CPU qtest gets for its address space: the riscv32 target's */
+/* the CPU the tests run the machine with */
 #ifndef HERA_CPU
-#define HERA_CPU        "rv32"
+#define HERA_CPU        "n9"
 #endif
 
 #define HERA_ILM        0x00030000

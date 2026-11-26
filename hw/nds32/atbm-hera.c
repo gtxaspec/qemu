@@ -1,13 +1,11 @@
 /*
  * ATBM6441 "Hera" Wi-Fi/IoT MCU board
  *
- * The chip's own CPU is an Andes NDS32 core, which QEMU gets with
- * target/nds32. Until that is in, the machine is built for every target
- * and has no CPU; it keeps its devices, memories and interrupt lines, so
- * a qtest drives them through MMIO (qtest needs a CPU to have an address
- * space: any "-cpu" will do, its lines unwired). A CPU with the named
- * inputs "IRQ" (0..31) and "NMI" (the nds32 core's) gets the chip's
- * interrupt numbers wired to them, unless -machine wire-cpu=off.
+ * The chip's own CPU is an Andes NDS32 core: its interrupt controller's
+ * inputs "IRQ" (0..31) get the chip's interrupt numbers (dev_int.h) and
+ * its "NMI" the watchdogs', unless -machine wire-cpu=off. A CPU without
+ * those inputs (the qtests' address-space CPU of another target) is left
+ * unwired.
  *
  * Memory (from the SDK's linker scripts and config headers):
  *   0x00030000 ILM, 64 KiB     code the bootloader copies from flash
@@ -36,6 +34,7 @@
 #include "qapi/error.h"
 #include "elf.h"
 #include "hw/core/boards.h"
+#include "target/nds32/cpu.h"
 #include "hw/core/cpu.h"
 #include "hw/core/irq.h"
 #include "hw/core/or-irq.h"
@@ -465,6 +464,7 @@ static void atbm_hera_machine_class_init(ObjectClass *oc, const void *data)
     MachineClass *mc = MACHINE_CLASS(oc);
 
     mc->desc = "ATBM6441 Hera Wi-Fi/IoT MCU";
+    mc->default_cpu_type = NDS32_CPU_TYPE_NAME("n9");
     mc->init = atbm_hera_init;
     mc->no_floppy = 1;
     mc->no_cdrom = 1;
