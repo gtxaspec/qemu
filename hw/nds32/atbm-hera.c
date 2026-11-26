@@ -375,6 +375,22 @@ static void atbm_hera_cpu_restart(AtbmHeraMachine *m)
     }
 }
 
+static void atbm_hera_restart_work(CPUState *cs, run_on_cpu_data data)
+{
+    atbm_hera_cpu_restart(data.host_ptr);
+}
+
+/*
+ * A restart a device asks for while the core runs (the lines below) is
+ * done by the core's own thread: it would otherwise write the registers
+ * back over a reset made from outside, at the end of its translation
+ * block, and a pulse too short for the core to stop in would be lost
+ */
+static void atbm_hera_restart_later(AtbmHeraMachine *m)
+{
+    async_run_on_cpu(m->cpu, atbm_hera_restart_work, RUN_ON_CPU_HOST_PTR(m));
+}
+
 static void atbm_hera_cpu_reset(void *opaque)
 {
     AtbmHeraMachine *m = opaque;
@@ -396,7 +412,7 @@ static void atbm_hera_cpu_reset(void *opaque)
  * Lines into the core: 0 the SMU's CPU_CTRL hold bit and 1 the SDIO
  * host's reset (HIF CONFIG[14]) keep it in reset while high and restart
  * it from the entry when released; 2 is the watchdogs' reset stage, a
- * restart. No ROM runs after a restart: the stand-in is the entry point.
+ * restart. A flash boot runs the ROM stand-in again after each restart.
  * 3 is the camera SoC's hold (the chip off or its reset pin, from the
  * link) and 4 the power-up that follows it, a reset of every device.
  */
@@ -408,7 +424,7 @@ static void atbm_hera_ctl(void *opaque, int n, int level)
 
     if (n == 2) {
         if (level && !was) {
-            atbm_hera_cpu_restart(m);
+            atbm_hera_restart_later(m);
         }
         return;
     }
@@ -421,9 +437,9 @@ static void atbm_hera_ctl(void *opaque, int n, int level)
     m->held = deposit32(m->held, n, 1, !!level);
     if (!was && m->held) {
         cpu_pause(m->cpu);
-        cpu_reset(m->cpu);
+        atbm_hera_restart_later(m);
     } else if (was && !m->held) {
-        atbm_hera_cpu_restart(m);
+        atbm_hera_restart_later(m);
         cpu_resume(m->cpu);
     }
 }
