@@ -260,6 +260,7 @@ static void test_flash_program_dma(void)
 {
     QTestState *qts = hera_init("");
 
+    qtest_writel(qts, HERA_SPI1 + SPI_IFSET, (2 << 16) | (7 << 8) | BIT(7));
     for (int i = 0; i < 8; i++) {
         qtest_writel(qts, HERA_SRAM + 4 * i, 0xa0b0c000 + i);
     }
