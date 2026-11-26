@@ -28,6 +28,7 @@
 #include "qemu/module.h"
 #include "hw/core/sysbus.h"
 #include "hw/core/qdev-properties.h"
+#include "hw/core/resettable.h"
 #include "migration/vmstate.h"
 
 #define TYPE_ATBM_HERA_WIFI_STUB "atbm-hera-wifi-stub"
@@ -121,6 +122,13 @@ static void stub_realize(DeviceState *dev, Error **errp)
     sysbus_init_mmio(SYS_BUS_DEVICE(dev), &s->iomem);
 }
 
+static void stub_reset_hold(Object *obj, ResetType type)
+{
+    AtbmHeraWifiStubState *s = ATBM_HERA_WIFI_STUB(obj);
+
+    memset(s->regs, 0, s->size);
+}
+
 static const Property stub_props[] = {
     DEFINE_PROP_UINT32("base", AtbmHeraWifiStubState, base, 0),
     DEFINE_PROP_UINT32("size", AtbmHeraWifiStubState, size, 0x20000),
@@ -129,8 +137,10 @@ static const Property stub_props[] = {
 static void stub_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
+    ResettableClass *rc = RESETTABLE_CLASS(oc);
 
     dc->realize = stub_realize;
+    rc->phases.hold = stub_reset_hold;
     device_class_set_props(dc, stub_props);
     set_bit(DEVICE_CATEGORY_MISC, dc->categories);
 }

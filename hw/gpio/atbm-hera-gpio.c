@@ -326,9 +326,8 @@ static void gpio_reset_hold(Object *obj, ResetType type)
     s->dbctrl = 0;
     memset(s->pad, 0, sizeof(s->pad));
     s->pins = gpio_levels(s);
-    s->last_out = 0;
-    s->last_oe = 0;
-    gpio_update_irq(s);
+    /* the pads go back to inputs, and what is wired to them hears of it */
+    gpio_refresh(s);
 }
 
 static void gpio_realize(DeviceState *dev, Error **errp)

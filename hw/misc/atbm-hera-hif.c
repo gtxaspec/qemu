@@ -571,6 +571,9 @@ static void hif_reset_hold(Object *obj, ResetType type)
     s->base = 0;
     s->tset[0] = s->tset[1] = 0;
     s->out_rd = 0;
+    s->p_addr = 0;
+    s->p_len = 0;
+    s->p_incr = 0;
     s->p_pos = 0;
     s->p_reading = false;
     qemu_set_irq(s->cpu_reset, 0);
