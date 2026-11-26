@@ -199,8 +199,18 @@ static void spi_update(AtbmHeraSpiState *s)
     }
     qemu_set_irq(s->irq, !!(pend & s->inten));
 
-    tx_req = (s->ctrl & CTRL_TXDMA) && s->tx.len < fifo_cap(s);
-    rx_req = (s->ctrl & CTRL_RXDMA) && (s->rx.len > 0 || s->busy);
+    /*
+     * A request is only made in the direction the transfer mode moves
+     * data. The 6441's flash program enables TX DMA alone before its
+     * command (mode 7), and the FIFO takes what it holds.
+     */
+    uint32_t mode = extract32(s->transctrl, 24, 4);
+    bool wr = mode == 0 || mode == 1 || (mode >= 3 && mode <= 6) || mode == 8 ||
+              (mode == 7 && !(s->ctrl & CTRL_RXDMA));
+    bool rd = mode == 0 || (mode >= 2 && mode <= 6) || mode == 9;
+
+    tx_req = wr && (s->ctrl & CTRL_TXDMA) && s->tx.len < fifo_cap(s);
+    rx_req = rd && (s->ctrl & CTRL_RXDMA) && (s->rx.len > 0 || s->busy);
     if (tx_req != s->tx_req) {
         s->tx_req = tx_req;
         qemu_set_irq(s->dreq_tx, tx_req);
