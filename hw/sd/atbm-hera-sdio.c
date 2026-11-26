@@ -52,9 +52,19 @@ static void sdio_write(SDIOCard *card, unsigned fn, uint32_t addr, bool incr,
     atbm_hera_hif_host_write(s->hif, addr, incr, buf, len);
 }
 
+static void sdio_f0_write(SDIOCard *card, uint32_t addr, uint8_t val)
+{
+    AtbmHeraSdioState *s = ATBM_HERA_SDIO(card);
+
+    atbm_hera_hif_set_block_size(s->hif, card->blksz[1]);
+}
+
 static void sdio_io_reset(SDIOCard *card)
 {
+    AtbmHeraSdioState *s = ATBM_HERA_SDIO(card);
+
     /* the chip keeps running through a bus I/O reset */
+    atbm_hera_hif_set_block_size(s->hif, 0);
 }
 
 static void sdio_realize(DeviceState *dev, Error **errp)
@@ -97,6 +107,7 @@ static void sdio_class_init(ObjectClass *oc, const void *data)
     sc->max_blksz = 512;
     sc->read = sdio_read;
     sc->write = sdio_write;
+    sc->f0_write = sdio_f0_write;
     sc->io_reset = sdio_io_reset;
 }
 

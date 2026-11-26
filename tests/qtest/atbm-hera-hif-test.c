@@ -13,6 +13,7 @@
  */
 
 #include "qemu/osdep.h"
+#include "qemu/bswap.h"
 #include "libqtest.h"
 #include "atbm-hera-test.h"
 
@@ -22,6 +23,7 @@
 #define P_INCR          0x08
 #define P_DATA          0x10
 #define P_IRQ           0x14
+#define P_BLKSZ         0x18
 
 #define H_IN(i)         (0x00 + 4 * (i))
 #define H_OUT_A(i)      (0x100 + 8 * (i))
@@ -31,6 +33,7 @@
 #define H_CLEAR         0x128
 #define H_CONFIG        0x134
 #define H_CONTROL       0x138
+#define H_FN1_BLKSZ     0x148
 #define H_SOFT_RESET    0x16c
 
 #define INT_PRIO        BIT(0)
@@ -207,6 +210,78 @@ static void test_input32(void)
     qtest_quit(qts);
 }
 
+/* the word that opens a host message: its length, and a check of it */
+static void put_msg(uint8_t *p, unsigned len, uint8_t fill)
+{
+    unsigned sum = (len & 0xff) + (len >> 8);
+
+    memset(p, fill, len);
+    stl_le_p(p, len | ((sum + (sum >> 8)) & 0xff) << 24);
+}
+
+/*
+ * The host driver sends several messages in one write (hal_apollo
+ * bh_sdio.c atbm_sdio_tx_bh): each starts on a block, and takes the next
+ * buffer
+ */
+static void test_input_packed(void)
+{
+    QTestState *qts = start("");
+    g_autofree uint8_t *w = g_malloc0(1024), *got = g_malloc(1024);
+
+    put_msg(w, 40, 0xa1);
+    put_msg(w + 256, 300, 0xb2);
+    put_msg(w + 768, 16, 0xc3);
+
+    /* with no block size set, a write is one message */
+    wr(qts, H_IN(7), 0x4000 | ARMED);
+    wr(qts, H_IN(8), 0x5000 | ARMED);
+    host_write(qts, F_QUEUE(7), w, 512);
+    g_assert_cmphex(rd(qts, H_IN(7)), ==, 0x4000 | (256 << 18));
+    g_assert_cmphex(rd(qts, H_IN(8)), ==, 0x5000 | ARMED);
+    wr(qts, H_CLEAR, INT_IN);
+
+    qtest_writel(qts, PORT + P_BLKSZ, 256);
+    g_assert_cmphex(rd(qts, H_FN1_BLKSZ), ==, 256);
+    wr(qts, H_IN(62), 0x1000 | ARMED);
+    wr(qts, H_IN(63), 0x2000 | ARMED);
+    wr(qts, H_IN(0), 0x3000 | ARMED);
+    wr(qts, H_IN(1), 0x3800 | ARMED);
+    host_write(qts, F_QUEUE(62), w, 1024);
+    g_assert_cmphex(rd(qts, H_RAW), ==, INT_IN);
+    /* each buffer's length is the blocks its message took */
+    g_assert_cmphex(rd(qts, H_IN(62)), ==, 0x1000 | (128 << 18));
+    g_assert_cmphex(rd(qts, H_IN(63)), ==, 0x2000 | (256 << 18));
+    g_assert_cmphex(rd(qts, H_IN(0)), ==, 0x3000 | (128 << 18));
+    g_assert_cmphex(rd(qts, H_IN(1)), ==, 0x3800 | ARMED);
+    qtest_memread(qts, HERA_SRAM + 0x1000, got, 40);
+    g_assert_cmpmem(got, 40, w, 40);
+    qtest_memread(qts, HERA_SRAM + 0x2000, got, 300);
+    g_assert_cmpmem(got, 300, w + 256, 300);
+    qtest_memread(qts, HERA_SRAM + 0x3000, got, 16);
+    g_assert_cmpmem(got, 16, w + 768, 16);
+    /* the padding is not written */
+    g_assert_cmphex(qtest_readl(qts, HERA_SRAM + 0x1000 + 40), ==, 0);
+
+    /* a message with no buffer armed for it is an error; the first went */
+    wr(qts, H_CLEAR, INT_IN);
+    wr(qts, H_IN(20), 0x1000 | ARMED);
+    wr(qts, H_IN(21), 0);
+    host_write(qts, F_QUEUE(20), w, 1024);
+    g_assert_cmphex(rd(qts, H_RAW), ==, INT_IN | INT_NOBUF);
+    g_assert_cmphex(rd(qts, H_IN(20)), ==, 0x1000 | (128 << 18));
+
+    /* a write that opens with no length word is one message still */
+    wr(qts, H_CLEAR, INT_IN | INT_NOBUF);
+    memset(w, 0x55, 512);
+    wr(qts, H_IN(30), 0x1000 | ARMED);
+    wr(qts, H_IN(31), 0x2000 | ARMED);
+    host_write(qts, F_QUEUE(30), w, 512);
+    g_assert_cmphex(rd(qts, H_IN(30)), ==, 0x1000 | (256 << 18));
+    g_assert_cmphex(rd(qts, H_IN(31)), ==, 0x2000 | ARMED);
+    qtest_quit(qts);
+}
+
 /* the firmware sends messages: the host sees the length, reads them */
 static void test_output(void)
 {
@@ -350,6 +425,7 @@ int main(int argc, char **argv)
     qtest_add_func("/atbm-hera/hif/reset", test_reset);
     qtest_add_func("/atbm-hera/hif/input", test_input);
     qtest_add_func("/atbm-hera/hif/input32", test_input32);
+    qtest_add_func("/atbm-hera/hif/input-packed", test_input_packed);
     qtest_add_func("/atbm-hera/hif/output", test_output);
     qtest_add_func("/atbm-hera/hif/control-and-soft-reset",
                    test_control_and_soft_reset);

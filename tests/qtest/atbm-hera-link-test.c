@@ -61,6 +61,7 @@
 #define HERA_SRAM       0x09000000
 #define HERA_HIF        0x0ab00000
 #define H_CONFIG        0x134
+#define H_FN1_BLKSZ     0x148
 #define H_HOST_IRQ      0x14c
 #define HERA_GPIO       0x16800000
 #define G_DIN           0x20
@@ -442,6 +443,12 @@ static void test_pair_sdio(void)
     hif_write(p.host, F_CONFIG, CONFIG_IRQ);
     g_assert_cmphex(qtest_readl(p.chip, HERA_HIF + H_CONFIG), ==, CONFIG_IRQ);
     g_assert_cmphex(hif_read(p.host, F_CONFIG), ==, CONFIG_IRQ);
+
+    /* function 1's block size, set in the card's FBR, reaches the HIF */
+    sd_io_direct(p.host, true, 0, 0x110, 0x00);
+    sd_io_direct(p.host, true, 0, 0x111, 0x01);
+    hif_read(p.host, F_CONFIG);
+    g_assert_cmphex(qtest_readl(p.chip, HERA_HIF + H_FN1_BLKSZ), ==, 256);
 
     /* the chip's SRAM through function 1's window, base and data port */
     qtest_writel(p.chip, HERA_SRAM + 0x40, 0x6441c0de);

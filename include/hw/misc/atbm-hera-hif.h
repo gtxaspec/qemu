@@ -38,6 +38,12 @@ void atbm_hera_hif_host_read(AtbmHeraHifState *s, uint32_t addr, bool incr,
 void atbm_hera_hif_host_write(AtbmHeraHifState *s, uint32_t addr, bool incr,
                               const uint8_t *buf, size_t len);
 
+/*
+ * Function 1's block size, as the host set it in the FBR (the card keeps
+ * the FBR; a reset of the chip does not change it)
+ */
+void atbm_hera_hif_set_block_size(AtbmHeraHifState *s, unsigned size);
+
 /* The level of the interrupt to the host */
 bool atbm_hera_hif_host_irq(AtbmHeraHifState *s);
 

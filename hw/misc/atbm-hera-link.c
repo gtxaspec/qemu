@@ -35,6 +35,9 @@
 #include "migration/blocker.h"
 #include "trace.h"
 
+/* function 1's block size in its FBR, two bytes */
+#define FBR1_BLKSIZE    0x110
+
 #define TYPE_ATBM_HERA_LINK "atbm-hera-link"
 OBJECT_DECLARE_SIMPLE_TYPE(AtbmHeraLinkState, ATBM_HERA_LINK)
 
@@ -54,6 +57,7 @@ struct AtbmHeraLinkState {
     uint32_t rx_len;            /* bytes of the header or payload so far */
     uint32_t pad_seen;
     uint32_t pad_level;         /* what the chip drives on each pad */
+    uint16_t blksz;             /* function 1's, as the SoC set it */
 
     qemu_irq pad_in[ATBM_HERA_LINK_PADS];
     qemu_irq hold;
@@ -169,8 +173,19 @@ static void link_message(AtbmHeraLinkState *s, const AtbmHeraLinkMsg *m,
         link_sdio(s, m, data);
         break;
     case AHL_SDIO_CFG:
+        /* of the CCCR and the FBR, the HIF goes by one setting */
+        if (a == FBR1_BLKSIZE) {
+            s->blksz = (s->blksz & 0xff00) | (c & 0xff);
+        } else if (a == FBR1_BLKSIZE + 1) {
+            s->blksz = (s->blksz & 0x00ff) | (c & 0xff) << 8;
+        } else {
+            break;
+        }
+        atbm_hera_hif_set_block_size(s->hif, s->blksz);
+        break;
     case AHL_SDIO_RESET:
-        /* the HIF keeps no CCCR or FBR state of its own to update */
+        s->blksz = 0;
+        atbm_hera_hif_set_block_size(s->hif, 0);
         break;
     case AHL_PAD:
         if (a < ATBM_HERA_LINK_PADS) {

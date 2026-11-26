@@ -10,7 +10,10 @@
  *                   arms one with the message buffer's offset in SRAM
  *                   ([16:0]) and bit 17. A host write to the buffer it
  *                   names clears bit 17 and puts the length, in 16-bit
- *                   words, in [29:18].
+ *                   words, in [29:18]. One write may carry several
+ *                   messages, one after the other, each from a function
+ *                   1 block boundary; they fill the descriptors that
+ *                   follow the one the write names.
  *   0x100 .. 0x11f  the output ring, the messages for the host: 4
  *                   descriptors of an offset word and a word with the
  *                   length in 16-bit words in [15:1] and busy in [0]. The
@@ -22,7 +25,8 @@
  *   nothing to send, [11] a write to a buffer that is not armed (the
  *   others are error causes the model never raises)
  *   0x12c, 0x130 priority output, 0x134 CONFIG, 0x138 CONTROL, 0x13c
- *   general purpose, 0x140 mode, 0x144 CCCR, 0x148 function 1 block size,
+ *   general purpose, 0x140 mode, 0x144 CCCR: kept
+ *   0x148 function 1 block size, the host's (read only)
  *   0x14c host IRQ, 0x150 long channel number, 0x154 channel length,
  *   0x15c write channel flag: kept, CONFIG and CONTROL as below
  *   0x16c SDIO soft reset: bit 0 sets the output pointer back to 0
@@ -41,15 +45,23 @@
  *   0x00 ADDR (17-bit function 1 address), 0x04 LEN (bytes), 0x08 INCR,
  *   0x10 DATA (a stream of words: writes collect LEN bytes and then are
  *   written; the first read fetches LEN bytes and the reads stream them),
- *   0x14 the host interrupt level.
+ *   0x14 the host interrupt level, 0x18 function 1's block size.
  *
- * Not modelled: the SDIO bus (the card model has it), block sizes, the
- * CRC and framing errors, the sleep handshake beyond CONTROL's, the
- * prefetch (reads of a window are direct), PRIORITY output channel use.
+ * Not modelled: the SDIO bus (the card model has it), the block size but
+ * for where a message starts, the CRC and framing errors, the sleep
+ * handshake beyond CONTROL's, the prefetch (reads of a window are direct),
+ * PRIORITY output channel use.
  * Assumptions: 64 input descriptors by default (the host driver's
  * SDIO_INPUT_64 build); a read with no message returns zeros; the soft
  * reset keeps the descriptors; host IRQ bit 0 also raises the host
- * interrupt.
+ * interrupt. Inferred from the host driver (hal_apollo bh_sdio.c
+ * atbm_sdio_tx_bh, which packs messages into one write, each padded to the
+ * block size, and counts a buffer for each): where a message in a write
+ * ends. The block is taken to go by the word that opens every message,
+ * its length in [15:0] with a check of it in [31:24] (the sum of the
+ * length's two bytes, plus its carry), and to start the next message at
+ * the next block; a write that does not open with such a word is one
+ * message, and so is every write while the host has set no block size.
  *
  * Copyright (C) 2026 Alfonso Gamboa <gtxent@gmail.com>
  *
@@ -74,6 +86,7 @@
 #define H_INT_CLEAR     0x128
 #define H_CONFIG        0x134
 #define H_CONTROL       0x138
+#define H_FN1_BLKSZ     0x148
 #define H_HOST_IRQ      0x14c
 #define H_SOFT_RESET    0x16c
 #define HIF_SIZE        0x200
@@ -112,6 +125,7 @@
 #define P_INCR          0x08
 #define P_DATA          0x10
 #define P_IRQ           0x14
+#define P_BLKSZ         0x18
 #define PORT_SIZE       0x100
 
 struct AtbmHeraHifState {
@@ -133,6 +147,7 @@ struct AtbmHeraHifState {
     uint32_t control;
     uint32_t base;
     uint32_t tset[2];
+    uint32_t blksz;
     unsigned out_rd;
 
     uint32_t p_addr;
@@ -191,26 +206,67 @@ static uint32_t hif_control_view(AtbmHeraHifState *s)
            ((words >> 12) & 3) << 14;
 }
 
+/*
+ * The length of the message a host write holds at buf, by the word that
+ * opens it; 0 if that is no such word
+ */
+static size_t hif_msg_len(const uint8_t *buf, size_t len)
+{
+    uint32_t flag, sum;
+
+    if (len < 4) {
+        return 0;
+    }
+    flag = ldl_le_p(buf);
+    sum = (flag & 0xff) + ((flag >> 8) & 0xff);
+    sum = (sum + (sum >> 8)) & 0xff;
+    if ((flag & 0xffff) < 4 || (flag & 0xffff) > len || flag >> 24 != sum) {
+        return 0;
+    }
+    return flag & 0xffff;
+}
+
+void atbm_hera_hif_set_block_size(AtbmHeraHifState *s, unsigned size)
+{
+    s->blksz = size;
+}
+
 static void hif_queue_write(AtbmHeraHifState *s, unsigned buf_id,
                             const uint8_t *buf, size_t len)
 {
-    unsigned idx = buf_id % hif_ndesc(s);
-    uint32_t *d = hif_in_desc(s, idx);
+    unsigned n = 0;
 
-    if (!(*d & DESC_ARMED)) {
-        s->raw |= INT_ERR_NOBUF;
-        hif_update(s);
-        return;
+    while (len) {
+        uint32_t *d = hif_in_desc(s, (buf_id + n) % hif_ndesc(s));
+        size_t msg = s->blksz ? hif_msg_len(buf, len) : 0;
+        size_t step = msg ? MIN(len, ROUND_UP(msg, s->blksz)) : len;
+
+        if (!msg) {
+            if (n) {
+                /* what follows the last message is padding */
+                break;
+            }
+            msg = len;
+        }
+        if (!(*d & DESC_ARMED)) {
+            s->raw |= INT_ERR_NOBUF;
+            break;
+        }
+        if (address_space_write(&address_space_memory,
+                                s->sram_base + (*d & DESC_OFF_MASK),
+                                MEMTXATTRS_UNSPECIFIED, buf,
+                                msg) != MEMTX_OK) {
+            s->raw |= INT_ERR_NUM;
+            break;
+        }
+        trace_atbm_hera_hif_input((buf_id + n) % hif_ndesc(s),
+                                  *d & DESC_OFF_MASK, msg);
+        *d = (*d & DESC_OFF_MASK) | (((step + 1) / 2) & 0xfff) << 18;
+        s->raw |= INT_IN_CMPL;
+        buf += step;
+        len -= step;
+        n++;
     }
-    if (address_space_write(&address_space_memory,
-                            s->sram_base + (*d & DESC_OFF_MASK),
-                            MEMTXATTRS_UNSPECIFIED, buf, len) != MEMTX_OK) {
-        s->raw |= INT_ERR_NUM;
-        hif_update(s);
-        return;
-    }
-    *d = (*d & DESC_OFF_MASK) | (((len + 1) / 2) & 0xfff) << 18;
-    s->raw |= INT_IN_CMPL;
     hif_update(s);
 }
 
@@ -234,6 +290,7 @@ static void hif_queue_read(AtbmHeraHifState *s, unsigned buf_id,
                        s->sram_base + (a & DESC_OFF_MASK),
                        MEMTXATTRS_UNSPECIFIED, buf,
                        MIN(len, (size_t)((b >> 1) & 0x7fff) * 2));
+    trace_atbm_hera_hif_output(idx, a & DESC_OFF_MASK, (b >> 1) & 0x7fff);
     *hif_out_b(s, idx) = b & ~OUT_BUSY;
     s->out_rd = (idx + 1) % NOUT;
     s->raw |= INT_OUT_CMPL;
@@ -357,6 +414,8 @@ static uint64_t hif_read(void *opaque, hwaddr addr, unsigned size)
         return s->config;
     case H_CONTROL:
         return s->control;
+    case H_FN1_BLKSZ:
+        return s->blksz;
     default:
         return s->reg[addr / 4];
     }
@@ -371,6 +430,7 @@ static void hif_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
         s->inten = val;
         break;
     case H_INT_RAW:
+    case H_FN1_BLKSZ:
         break;
     case H_INT_CLEAR:
         s->raw &= ~val;
@@ -423,6 +483,8 @@ static uint64_t port_read(void *opaque, hwaddr addr, unsigned size)
         return s->p_incr;
     case P_IRQ:
         return atbm_hera_hif_host_irq(s);
+    case P_BLKSZ:
+        return s->blksz;
     case P_DATA: {
         uint32_t v = 0;
 
@@ -463,6 +525,9 @@ static void port_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
         break;
     case P_INCR:
         s->p_incr = val & 1;
+        break;
+    case P_BLKSZ:
+        s->blksz = val & 0xffff;
         break;
     case P_DATA: {
         uint32_t n = MIN(s->p_len, MAX_XFER);
@@ -530,8 +595,8 @@ static void hif_init(Object *obj)
 
 static const VMStateDescription vmstate_hif = {
     .name = TYPE_ATBM_HERA_HIF,
-    .version_id = 1,
-    .minimum_version_id = 1,
+    .version_id = 2,
+    .minimum_version_id = 2,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32_ARRAY(reg, AtbmHeraHifState, HIF_REGS),
         VMSTATE_UINT32(inten, AtbmHeraHifState),
@@ -540,6 +605,7 @@ static const VMStateDescription vmstate_hif = {
         VMSTATE_UINT32(control, AtbmHeraHifState),
         VMSTATE_UINT32(base, AtbmHeraHifState),
         VMSTATE_UINT32_ARRAY(tset, AtbmHeraHifState, 2),
+        VMSTATE_UINT32(blksz, AtbmHeraHifState),
         VMSTATE_UINT32(out_rd, AtbmHeraHifState),
         VMSTATE_END_OF_LIST()
     }
