@@ -383,7 +383,7 @@ static void nor_reset_hold(Object *obj, ResetType type)
     AtbmHeraNorState *s = ATBM_HERA_NOR(obj);
 
     s->sr1 = 0;
-    s->sr2 = 0;
+    s->sr2 = s->sr2_reset;
     s->op = 0;
     s->state = CMD_NONE;
     s->deep_pd = false;
@@ -425,6 +425,7 @@ static const Property nor_props[] = {
     DEFINE_PROP_DRIVE("drive", AtbmHeraNorState, blk),
     DEFINE_PROP_UINT32("size", AtbmHeraNorState, size, 2 * MiB),
     DEFINE_PROP_UINT32("jedec-id", AtbmHeraNorState, jedec_id, 0),
+    DEFINE_PROP_UINT8("status2", AtbmHeraNorState, sr2_reset, 0),
 };
 
 static void nor_class_init(ObjectClass *oc, const void *data)

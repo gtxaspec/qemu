@@ -32,6 +32,7 @@ struct AtbmHeraNorState {
 
     uint8_t sr1;
     uint8_t sr2;
+    uint8_t sr2_reset;
     uint8_t new_sr1;
     uint8_t new_sr2;
     uint8_t op;
