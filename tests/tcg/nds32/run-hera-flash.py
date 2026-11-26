@@ -3,11 +3,13 @@
 """Check the atbm-hera boot ROM stand-in: build a flash image of our own
 (a boot_config and a small program at flash 0x1000, linked for the uncached
 window), boot it and wait for its line on UART2. A header without the magic
-must leave the core stopped.
+must leave the core stopped, and a chip the camera SoC's QEMU powers off and
+on over the link must run its boot_config again.
 
 usage: run-hera-flash.py QEMU CC
 """
 import os
+import socket
 import struct
 import subprocess
 import sys
@@ -16,6 +18,7 @@ import time
 
 here = os.path.dirname(os.path.abspath(__file__))
 FLASH_SIZE = 2 * 1024 * 1024
+AHL_HELLO, AHL_POWER, AHL_RESET = 1, 9, 10
 BOOT1 = 0x1000
 
 
@@ -31,6 +34,19 @@ def run(qemu, flash, out, log):
                              '-serial', 'file:' + out,
                              '-drive', 'if=mtd,format=raw,file=' + flash,
                              '-d', 'guest_errors', '-D', log])
+
+
+def link_send(sock, kind, level):
+    sock.sendall(struct.pack('<4I', kind, 0, 0, level))
+
+
+def wait_count(out, want, count, secs):
+    deadline = time.time() + secs
+    while time.time() < deadline:
+        if os.path.exists(out) and open(out).read().count(want) >= count:
+            return True
+        time.sleep(0.1)
+    return False
 
 
 def wait_for(out, want, secs):
@@ -75,6 +91,38 @@ def main():
         proc.wait()
         if text.strip() != 'HERAFLASH OK':
             sys.exit('unexpected UART2 output: %r' % text)
+
+        # the SoC's QEMU powers the chip off and on, then pulses its reset pin
+        path = os.path.join(d, 'hera.link')
+        out = os.path.join(d, 'link.txt')
+        proc = subprocess.Popen(
+            [qemu, '-M', 'atbm-hera', '-display', 'none', '-monitor', 'none',
+             '-serial', 'none', '-serial', 'file:' + out,
+             '-drive', 'if=mtd,format=raw,file=' + good,
+             '-chardev', 'socket,id=hl,server=on,wait=off,path=' + path,
+             '-global', 'atbm-hera-link.chardev=hl'])
+        try:
+            deadline = time.time() + 20
+            while not os.path.exists(path) and time.time() < deadline:
+                time.sleep(0.1)
+            sock = socket.socket(socket.AF_UNIX)
+            sock.connect(path)
+            if struct.unpack('<4I', sock.recv(16))[0] != AHL_HELLO:
+                sys.exit('the chip did not open with HELLO')
+            link_send(sock, AHL_HELLO, 1)
+            if not wait_count(out, 'HERAFLASH OK', 1, 20):
+                sys.exit('no boot with the link up')
+            link_send(sock, AHL_POWER, 0)
+            link_send(sock, AHL_POWER, 1)
+            if not wait_count(out, 'HERAFLASH OK', 2, 20):
+                sys.exit('no boot from the flash after a power cycle')
+            link_send(sock, AHL_RESET, 1)
+            link_send(sock, AHL_RESET, 0)
+            if not wait_count(out, 'HERAFLASH OK', 3, 20):
+                sys.exit('no boot from the flash after the reset pin')
+        finally:
+            proc.kill()
+            proc.wait()
 
         bad = image('bad.bin', config(0x1234, 0x401040, len(boot1)))
         out = os.path.join(d, 'bad.txt')
