@@ -27,6 +27,9 @@ OBJECT_DECLARE_SIMPLE_TYPE(IngenicGpioState, INGENIC_GPIO)
 
 typedef struct IngenicGpioFamily IngenicGpioFamily;
 
+/* The level of PWM channel @chan's output now, in virtual time */
+typedef uint32_t (*IngenicGpioPwmLevel)(void *opaque, unsigned chan);
+
 typedef struct IngenicGpioPort {
     uint32_t intr;      /* 0x10 - interrupt enable */
     uint32_t msk;       /* 0x20 - interrupt mask */
@@ -62,8 +65,17 @@ struct IngenicGpioState {
     uint32_t zclr[4];
     qemu_irq irq[INGENIC_GPIO_MAX_PORTS];
     qemu_irq pad[INGENIC_GPIO_MAX_PORTS * 32];
+    IngenicGpioPwmLevel pwm_level;  /* the timer unit's or PWM block's */
+    void *pwm_opaque;
     CharFrontend trace;     /* a JSON line for each pin that changes */
     bool trace_ext;         /* the change comes from outside the guest */
 };
+
+/*
+ * Wire the PWM channels' outputs to the pads that carry them: a pad in its
+ * PWM function reads (PXPIN) the channel's level, as on silicon.
+ */
+void ingenic_gpio_set_pwm(IngenicGpioState *s, IngenicGpioPwmLevel level,
+                          void *opaque);
 
 #endif /* HW_GPIO_INGENIC_GPIO_H */

@@ -635,6 +635,19 @@ static void tcu_pwm_out(IngenicTcuState *s, unsigned n, IngenicPwmOut *o,
     key->k[0] = o->level;
 }
 
+uint32_t ingenic_tcu_pwm_level(void *opaque, unsigned n)
+{
+    IngenicTcuState *s = opaque;
+    IngenicPwmOut o;
+    IngenicPwmKey key;
+
+    if (n >= s->channels) {
+        return 0;
+    }
+    tcu_pwm_out(s, n, &o, &key);
+    return o.level;
+}
+
 static void tcu_pwm_trace(IngenicTcuState *s, unsigned n)
 {
     IngenicPwmOut o;

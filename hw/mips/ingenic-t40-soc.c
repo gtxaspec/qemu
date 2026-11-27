@@ -1288,6 +1288,12 @@ static void ingenic_t40_realize(DeviceState *dev, Error **errp)
     sysbus_realize(SYS_BUS_DEVICE(&s->gpio), &error_fatal);
     sysbus_mmio_map(SYS_BUS_DEVICE(&s->gpio), 0,
                     s->memmap[INGENIC_T40_DEV_GPIO]);
+    /* The T41 has no PWM in its timer unit; the T40 has no PWM block */
+    if (t41) {
+        ingenic_gpio_set_pwm(&s->gpio, ingenic_pwm_level, &s->pwm);
+    } else {
+        ingenic_gpio_set_pwm(&s->gpio, ingenic_tcu_pwm_level, &s->tcu);
+    }
 
     /* INTC - one register window per core, and the APB one */
     qdev_prop_set_uint32(DEVICE(&s->intc), "num-cpus", s->num_cpus);

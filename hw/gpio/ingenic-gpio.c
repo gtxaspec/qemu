@@ -108,6 +108,77 @@ typedef struct IngenicGpioPadBits {
     uint8_t bits;
 } IngenicGpioPadBits;
 
+/* A pad that carries PWM channel @chan in function @func */
+typedef struct IngenicGpioPwmPad {
+    uint8_t pin;                        /* port * 32 + bit, 0xff ends a list */
+    uint8_t func;
+    uint8_t chan;
+} IngenicGpioPwmPad;
+
+#define PA(n) (n)
+#define PB(n) (32 + (n))
+#define PC(n) (64 + (n))
+#define PD(n) (96 + (n))
+
+/*
+ * The pads each part's PWM channels come out on. T10, T20, T21 and T30:
+ * the vendor 3.10 kernels' PWM_PORTB_BIT17, BIT18, PORTC_BIT8 and BIT9
+ * (function 0). T23, T31: the FUNC0-3 columns of the vendors' pinout and
+ * GPIO tables (the T31's lists PB17, PB18, PB27 and PB28 as the QFN's
+ * pads, as the vendor T31 kernel's pwm_gpio table does, and PC17-PC20 and
+ * PA22 on the BGA parts; the mainline T31 pinctrl names only PC17-PC20).
+ * T32, T33, T40, T41, A1: the same tables and datasheets, the T40's from
+ * the vendor kernel's Kconfig, confirmed by its GPIO allocation table.
+ */
+static const IngenicGpioPwmPad ingenic_gpio_pwm_legacy[] = {
+    { PB(17), 0, 0 }, { PB(18), 0, 1 }, { PC(8), 0, 2 }, { PC(9), 0, 3 },
+    { 0xff }
+};
+static const IngenicGpioPwmPad ingenic_gpio_pwm_t31[] = {
+    { PA(14), 2, 0 }, { PA(22), 2, 1 }, { PB(17), 0, 0 }, { PB(18), 0, 1 },
+    { PB(27), 1, 2 }, { PB(28), 1, 3 },
+    { PC(17), 0, 0 }, { PC(18), 0, 1 }, { PC(19), 0, 2 }, { PC(20), 0, 3 },
+    { 0xff }
+};
+static const IngenicGpioPwmPad ingenic_gpio_pwm_t23[] = {
+    { PA(14), 2, 0 }, { PB(17), 0, 0 }, { PB(18), 0, 1 },
+    { PB(27), 1, 2 }, { PB(28), 1, 3 }, { 0xff }
+};
+static const IngenicGpioPwmPad ingenic_gpio_pwm_t32[] = {
+    { PA(17), 3, 0 }, { PA(19), 3, 1 }, { PA(15), 3, 2 }, { PA(14), 3, 3 },
+    { PB(30), 2, 0 }, { PB(26), 1, 1 }, { PB(11), 2, 2 }, { PB(27), 1, 2 },
+    { PB(13), 2, 3 }, { PB(28), 1, 3 }, { PB(31), 0, 3 },
+    { PC(8), 2, 0 }, { PC(9), 2, 2 }, { 0xff }
+};
+/* The T33 moves PB28, PB30 and PB31 to function 0 */
+static const IngenicGpioPwmPad ingenic_gpio_pwm_t33[] = {
+    { PA(17), 3, 0 }, { PA(19), 3, 1 }, { PA(15), 3, 2 }, { PA(14), 3, 3 },
+    { PB(30), 0, 0 }, { PB(26), 1, 1 }, { PB(11), 2, 2 }, { PB(27), 1, 2 },
+    { PB(13), 2, 3 }, { PB(28), 0, 3 }, { PB(31), 0, 3 },
+    { PC(8), 2, 0 }, { PC(9), 2, 2 }, { 0xff }
+};
+/* The T40's timer unit channels, the vendor's default pads and the others */
+static const IngenicGpioPwmPad ingenic_gpio_pwm_t40[] = {
+    { PC(2), 2, 0 }, { PC(3), 2, 1 }, { PC(4), 2, 2 }, { PC(5), 2, 3 },
+    { PC(6), 2, 4 }, { PC(7), 2, 5 }, { PD(22), 2, 6 }, { PD(23), 2, 7 },
+    { PC(27), 1, 0 }, { PD(26), 2, 0 }, { PC(28), 1, 1 }, { PD(27), 2, 1 },
+    { PB(30), 0, 2 }, { PB(31), 0, 3 }, { PB(25), 1, 4 }, { PB(26), 1, 5 },
+    { PB(6), 1, 6 }, { PB(7), 1, 7 }, { 0xff }
+};
+static const IngenicGpioPwmPad ingenic_gpio_pwm_t41[] = {
+    { PB(17), 0, 0 }, { PB(18), 0, 1 }, { PB(8), 2, 2 }, { PB(9), 2, 3 },
+    { PB(13), 2, 4 }, { PB(14), 2, 5 }, { PB(15), 2, 6 }, { PB(16), 2, 7 },
+    { PC(15), 2, 0 }, { PC(16), 2, 1 }, { PC(17), 2, 2 }, { PC(18), 2, 3 },
+    { PD(9), 2, 4 }, { PD(10), 2, 5 }, { PD(11), 2, 6 }, { PD(12), 2, 7 },
+    { 0xff }
+};
+/* The A1's block has four channels on pads */
+static const IngenicGpioPwmPad ingenic_gpio_pwm_a1[] = {
+    { PB(28), 0, 0 }, { PB(29), 0, 1 }, { PB(30), 0, 2 }, { PB(31), 0, 3 },
+    { PC(14), 2, 0 }, { PC(15), 2, 1 }, { PC(16), 2, 2 }, { PC(17), 2, 3 },
+    { 0xff }
+};
+
 struct IngenicGpioFamily {
     const char *name;
     uint16_t pads[16];                  /* its pad registers, ending in 0 */
@@ -116,6 +187,7 @@ struct IngenicGpioFamily {
     const IngenicGpioPadBits *bits;     /* ending in a reg of 0 */
     uint16_t absent;                    /* written by firmware, not there */
     const uint32_t *pinread;            /* what PXPIN shows of each port */
+    const IngenicGpioPwmPad *pwm;       /* its PWM pads */
 };
 
 static const IngenicGpioReset ingenic_gpio_reset_t10[] = {
@@ -244,54 +316,56 @@ static const IngenicGpioReset ingenic_gpio_reset_a1[] = {
 
 static const IngenicGpioFamily ingenic_gpio_families[] = {
     /* pulls off, pull direction */
-    { "t10", { 0x060, 0x090 }, ingenic_gpio_reset_t10 },
-    { "t20", { 0x060, 0x090 }, ingenic_gpio_reset_t20 },
+    { "t10", { 0x060, 0x090 }, ingenic_gpio_reset_t10,
+      .pwm = ingenic_gpio_pwm_legacy },
+    { "t20", { 0x060, 0x090 }, ingenic_gpio_reset_t20,
+      .pwm = ingenic_gpio_pwm_legacy },
     /*
      * glitch filters 0-3, VDDIO, pulls up and down, drive strength low and
      * high, slew rate, Schmitt trigger, receiver enable
      */
     { "t21", { 0x070, 0x080, 0x090, 0x0a0, 0x100, 0x110, 0x120, 0x130,
                0x140, 0x150, 0x160, 0x180 }, ingenic_gpio_reset_t21,
-      .absent = 0x060 },
+      .absent = 0x060, .pwm = ingenic_gpio_pwm_legacy },
     /* power domain, pulls, drive strength low and high, slew, Schmitt */
     { "t23", { 0x100, 0x110, 0x120, 0x130, 0x140, 0x150, 0x160 },
-      ingenic_gpio_reset_t23 },
+      ingenic_gpio_reset_t23, .pwm = ingenic_gpio_pwm_t23 },
     /*
      * VDDIO, pulls and drive strength (two bits a pin: pins 0-15, then
      * 16-31), slew rate, Schmitt trigger, receiver enable
      */
     { "t30", { 0x100, 0x110, 0x120, 0x130, 0x140, 0x150, 0x160, 0x180 },
       ingenic_gpio_reset_t30, ingenic_gpio_pins_t30, ingenic_gpio_bits_t30,
-      0x060, ingenic_gpio_pinread_t30 },
+      0x060, ingenic_gpio_pinread_t30, ingenic_gpio_pwm_legacy },
     { "t31", { 0x100, 0x110, 0x120, 0x130, 0x140, 0x150, 0x160 },
-      ingenic_gpio_reset_t31 },
+      ingenic_gpio_reset_t31, .pwm = ingenic_gpio_pwm_t31 },
     /*
      * glitch filters, power domain, pulls, drive strength 0 and 1, slew,
      * Schmitt, shadow mode and its update
      */
     { "t32", { 0x070, 0x080, 0x090, 0x0a0, 0x100, 0x110, 0x120, 0x130,
                0x140, 0x150, 0x160, 0x1d0, 0x1e4 }, ingenic_gpio_reset_t32,
-      .absent = 0x170 },
+      .absent = 0x170, .pwm = ingenic_gpio_pwm_t32 },
     { "t33", { 0x070, 0x080, 0x090, 0x0a0, 0x100, 0x110, 0x120, 0x130,
                0x140, 0x150, 0x160, 0x1d0, 0x1e4 }, ingenic_gpio_reset_t32,
-      .absent = 0x170 },
+      .absent = 0x170, .pwm = ingenic_gpio_pwm_t33 },
     /*
      * glitch filters, power domain, pulls, drive strength 0-2, slew,
      * Schmitt, Schmitt 1, hold
      */
     { "t40", { 0x070, 0x080, 0x090, 0x0a0, 0x100, 0x110, 0x120, 0x130,
                0x140, 0x150, 0x160, 0x170, 0x180, 0x190 },
-      ingenic_gpio_reset_t40 },
+      ingenic_gpio_reset_t40, .pwm = ingenic_gpio_pwm_t40 },
     /*
      * glitch filters, power domain, pulls, drive strength 0-2, slew,
      * Schmitt, drive strength 3, strong pull-up
      */
     { "t41", { 0x070, 0x080, 0x090, 0x0a0, 0x100, 0x110, 0x120, 0x130,
                0x140, 0x150, 0x160, 0x170, 0x1a0, 0x1b0 },
-      ingenic_gpio_reset_t41 },
+      ingenic_gpio_reset_t41, .pwm = ingenic_gpio_pwm_t41 },
     { "a1", { 0x070, 0x080, 0x090, 0x0a0, 0x100, 0x110, 0x120, 0x130,
               0x140, 0x150, 0x160, 0x170, 0x180, 0x190 },
-      ingenic_gpio_reset_a1 },
+      ingenic_gpio_reset_a1, .pwm = ingenic_gpio_pwm_a1 },
 };
 
 enum { R_INT, R_MSK, R_PAT1, R_PAT0, R_FLG, R_PIN };
@@ -371,6 +445,39 @@ static uint32_t gpio_level(IngenicGpioPort *p)
     uint32_t out = gpio_outputs(p);
 
     return (out & p->pat0) | (~out & p->in);
+}
+
+/*
+ * What PXPIN shows of port @n: the pads in their PWM function read the
+ * channel's level now, not the level outside holds on them
+ */
+static uint32_t gpio_pin(IngenicGpioState *s, unsigned n)
+{
+    IngenicGpioPort *p = &s->port[n];
+    uint32_t level = gpio_level(p);
+
+    if (!s->pwm_level || !s->fam->pwm) {
+        return level;
+    }
+    for (const IngenicGpioPwmPad *d = s->fam->pwm; d->pin != 0xff; d++) {
+        unsigned bit = d->pin % 32;
+
+        if (d->pin / 32 == n && !extract32(p->intr, bit, 1) &&
+            !extract32(p->msk, bit, 1) &&
+            (extract32(p->pat1, bit, 1) << 1 | extract32(p->pat0, bit, 1)) ==
+            d->func) {
+            level = deposit32(level, bit, 1,
+                              s->pwm_level(s->pwm_opaque, d->chan));
+        }
+    }
+    return level;
+}
+
+void ingenic_gpio_set_pwm(IngenicGpioState *s, IngenicGpioPwmLevel level,
+                          void *opaque)
+{
+    s->pwm_level = level;
+    s->pwm_opaque = opaque;
 }
 
 /* Last, as a pad's wire can pull another pad of the port and update it */
@@ -551,7 +658,7 @@ static uint64_t ingenic_gpio_read(void *opaque, hwaddr offset,
     }
     switch (offset % s->port_stride) {
     case PXPIN:
-        return gpio_level(p) &
+        return gpio_pin(s, n) &
                (s->fam->pinread ? s->fam->pinread[n] : UINT32_MAX);
     case PXINT: case PXINTS: case PXINTC:
         return p->intr;
@@ -672,7 +779,8 @@ static void gpio_prop_get(Object *obj, Visitor *v, const char *name,
     IngenicGpioState *s = INGENIC_GPIO(obj);
     IngenicGpioPort *p = &s->port[GPOINTER_TO_UINT(opaque) >> 8];
     int r = GPOINTER_TO_UINT(opaque) & 0xff;
-    uint32_t value = r == R_PIN ? gpio_level(p) : *gpio_reg(p, r);
+    uint32_t value = r == R_PIN ? gpio_pin(s, GPOINTER_TO_UINT(opaque) >> 8) :
+                                  *gpio_reg(p, r);
 
     visit_type_uint32(v, name, &value, errp);
 }

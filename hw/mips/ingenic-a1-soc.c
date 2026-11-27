@@ -1049,6 +1049,7 @@ static void ingenic_a1_realize(DeviceState *dev, Error **errp)
     qdev_prop_set_uint32(DEVICE(&s->gpio), "nr-ports", 5);
     qdev_prop_set_string(DEVICE(&s->gpio), "family", "a1");
     sysbus_realize(SYS_BUS_DEVICE(&s->gpio), &error_fatal);
+    ingenic_gpio_set_pwm(&s->gpio, ingenic_pwm_level, &s->pwm);
     sysbus_mmio_map(SYS_BUS_DEVICE(&s->gpio), 0,
                     s->memmap[INGENIC_A1_DEV_GPIO]);
     qdev_connect_gpio_out_named(DEVICE(&s->hdmi), "hpd", 0,

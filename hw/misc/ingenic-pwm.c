@@ -162,6 +162,19 @@ static void pwm_out(IngenicPwmState *s, unsigned n, IngenicPwmOut *o,
     key->k[0] = o->level;
 }
 
+uint32_t ingenic_pwm_level(void *opaque, unsigned n)
+{
+    IngenicPwmState *s = opaque;
+    IngenicPwmOut o;
+    IngenicPwmKey key;
+
+    if (n >= s->channels) {
+        return 0;
+    }
+    pwm_out(s, n, &o, &key);
+    return o.level;
+}
+
 static void pwm_trace(IngenicPwmState *s, unsigned n)
 {
     IngenicPwmOut o;

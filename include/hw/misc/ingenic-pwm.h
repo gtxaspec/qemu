@@ -48,4 +48,7 @@ struct IngenicPwmState {
     IngenicPwmChannel chn[INGENIC_PWM_CHANNELS];
 };
 
+/* Channel @n's PWM pad level now, for ingenic_gpio_set_pwm() */
+uint32_t ingenic_pwm_level(void *opaque, unsigned n);
+
 #endif /* HW_MISC_INGENIC_PWM_H */

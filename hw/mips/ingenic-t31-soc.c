@@ -2040,6 +2040,17 @@ static void ingenic_t31_realize(DeviceState *dev, Error **errp)
     sysbus_realize(SYS_BUS_DEVICE(&s->gpio), &error_fatal);
     sysbus_mmio_map(SYS_BUS_DEVICE(&s->gpio), 0,
                     s->memmap[INGENIC_T31_DEV_GPIO]);
+    {
+        const T31Variant *v = (const T31Variant *)s->variant;
+        uint32_t cpufam = v ? (v->cpuid >> 12) & 0xFFFF : 0x0031;
+
+        /* The T32 and T33 have the PWM block, the others the timer unit */
+        if (cpufam == 0x0032 || cpufam == 0x0033) {
+            ingenic_gpio_set_pwm(&s->gpio, ingenic_pwm_level, &s->pwm);
+        } else {
+            ingenic_gpio_set_pwm(&s->gpio, ingenic_tcu_pwm_level, &s->tcu);
+        }
+    }
 
     /* INTC: 64 sources -> MIPS IP2. Wired to CPU in board init. */
     sysbus_realize(SYS_BUS_DEVICE(&s->intc), &error_fatal);

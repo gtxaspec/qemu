@@ -97,4 +97,7 @@ struct IngenicTcuState {
     IngenicTcuChannel chn[INGENIC_TCU_NUM_CHANNELS];
 };
 
+/* Channel @n's PWM pad level now, for ingenic_gpio_set_pwm() */
+uint32_t ingenic_tcu_pwm_level(void *opaque, unsigned n);
+
 #endif /* HW_TIMER_INGENIC_TCU_H */
