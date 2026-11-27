@@ -34,24 +34,32 @@
 #define AICCR           0x04
 #define AICDR           0x34
 #define DST             0x00600000
-#define WORDS           64
+#define WORDS           128
+#define CODEC_CACR2     0x10021008      /* bit 0: mono ADC */
 
 typedef struct {
     const char *machine;
     unsigned tsz;               /* DCM.TSZ: 2 = 2 bytes, 3 = 16, 4 = 32 */
     unsigned burst;             /* bytes */
     bool doubled;
+    bool stock;                 /* the vendor driver's setup, mono ADC */
 } Case;
 
 static const Case cases[] = {
-    { "ingenic-t10", 4, 32, true },
-    { "ingenic-t20", 4, 32, true },
-    { "ingenic-t10", 3, 16, true },
-    { "ingenic-t20", 3, 16, true },
-    { "ingenic-t10", 2, 2, false },
-    { "ingenic-t20", 2, 2, false },
-    { "ingenic-t30", 4, 32, false },
-    { "ingenic-t30", 3, 16, false },
+    { "ingenic-t10", 4, 32, true, false },
+    { "ingenic-t20", 4, 32, true, false },
+    { "ingenic-t10", 3, 16, true, false },
+    { "ingenic-t20", 3, 16, true, false },
+    { "ingenic-t10", 2, 2, false, false },
+    { "ingenic-t20", 2, 2, false, false },
+    { "ingenic-t30", 4, 32, false, false },
+    { "ingenic-t30", 3, 16, false, false },
+    { "ingenic-t10", 4, 32, true, true },
+    { "ingenic-t20", 4, 32, true, true },
+    { "ingenic-t10", 3, 16, true, true },
+    { "ingenic-t20", 3, 16, true, true },
+    { "ingenic-t10", 2, 2, false, true },
+    { "ingenic-t20", 2, 2, false, true },
 };
 
 static int16_t word(QTestState *qts, int i)
@@ -66,10 +74,17 @@ static void test_burst(const void *data)
                                   "-global ingenic-aic.mic=tone:100:-6",
                                   c->machine);
     unsigned per = c->burst / 2;
+    unsigned step = c->stock ? 2 : 1;
 
-    /* RFTH 7 (16 entries), one entry a frame, record, RX DMA, 16 bits */
+    /* RFTH 7 (16 entries), record, RX DMA, 16 bits: one entry a frame */
     qtest_writel(qts, AIC + AICFR, 1 | 7u << 24);
-    qtest_writel(qts, AIC + AICCR, 1 | 1 << 12 | 1 << 15 | 1 << 16);
+    if (c->stock) {
+        /* the vendor driver's AICCR, two entries a frame, and a mono ADC */
+        qtest_writel(qts, CODEC_CACR2, 1);
+        qtest_writel(qts, AIC + AICCR, 0x01218001);
+    } else {
+        qtest_writel(qts, AIC + AICCR, 1 | 1 << 12 | 1 << 15 | 1 << 16);
+    }
     qtest_writel(qts, DMAC, 1);
     qtest_writel(qts, CH0(DCS), 0);
     qtest_writel(qts, CH0(DSA), AIC + AICDR);
@@ -83,15 +98,19 @@ static void test_burst(const void *data)
     }
     g_assert_cmphex(qtest_readl(qts, CH0(DCS)) & DCS_TT, ==, DCS_TT);
 
-    /* Word 16 starts a burst whatever the size; 17 never does */
-    for (int i = 16; i < WORDS - 1; i += per) {
-        int a = word(qts, i), b = word(qts, i + 1);
+    /*
+     * Word 32 starts a burst whatever the size, the next sample (one or
+     * two words on) never does. A stock frame is L then R: the mic is in L
+     * and R reads 0.
+     */
+    for (int i = 32; i < WORDS - 2 * step; i += MAX(per, step)) {
+        int a = word(qts, i), b = word(qts, i + step);
 
         g_assert_cmpint(b, >, 1000);
         g_assert_cmpint(abs((c->doubled ? 2 * b : b) - a), <, 500);
-        if (i + per + 1 < WORDS) {
-            /* the next burst's first word is not the one before it */
-            g_assert_cmpint(abs(word(qts, i + 2) - b), <, 500);
+        g_assert_cmpint(abs(word(qts, i + 2 * step) - b), <, 500);
+        if (c->stock) {
+            g_assert_cmpint(word(qts, i + 1), ==, 0);
         }
     }
     qtest_quit(qts);
@@ -103,6 +122,11 @@ int main(int argc, char **argv)
     for (int i = 0; i < ARRAY_SIZE(cases); i++) {
         char *name = g_strdup_printf("ingenic-aic-burst/%s/%u",
                                      cases[i].machine + 8, cases[i].burst);
+        if (cases[i].stock) {
+            g_free(name);
+            name = g_strdup_printf("ingenic-aic-burst/%s/%u/stock",
+                                   cases[i].machine + 8, cases[i].burst);
+        }
 
         qtest_add_data_func(name, &cases[i], test_burst);
         g_free(name);

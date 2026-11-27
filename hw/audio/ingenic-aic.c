@@ -196,9 +196,12 @@ struct IngenicAicCodec {
 static const IngenicAicCodec aic_codecs[] = {
     /*
      * T10, T20: read by the PDMA in bursts, the FIFO's first word of each
-     * comes back doubled (see aic_burst_dup)
+     * comes back doubled (see aic_burst_dup). With the mono bit set the
+     * mic is in the L slot, as raw-slot captures on a T10L and a T20X show;
+     * their R slot carries an unconnected input of its own (a DC offset
+     * and noise), which reads as zero here.
      */
-    { "t10", 0x44, 0x02, 1, -1, NULL, 0, 0x00030003, 0, false, true },
+    { "t10", 0x44, 0x02, 0, -1, NULL, 0, 0x00030003, 0, false, true },
     { "t30", 0x44, 0x02, 1, -1, NULL, 0, 0x00030003, 0 },
     { "t21", 0x44, 0x02, 1, -1, NULL, 0, 0x00030003, 8 },
     { "t31", 0x44, 0x02, 1, 0x4c, codec_reset_t31,
