@@ -12,7 +12,8 @@
 
 /*
  * The paravirtual port, as QEMU's include/hw/net/atbm-hera-lmac.h defines
- * it (ABI 1). Kept in step by hand: the shim builds without QEMU's tree.
+ * it (ABI 2; the shim runs on 1 without its power save). Kept in step
+ * by hand: the shim builds without QEMU's tree.
  */
 #define QL_BASE             0x0a580000u
 #define QL_IRQ              0
@@ -28,9 +29,16 @@
 #define QL_IND_SIZE         0x24
 #define QL_IND_POP          0x28
 #define QL_IND_DROPPED      0x2c
+#define QL_PS               0x38
+#define QL_WAKE_MASK        0x3c
+#define QL_WAKE_DELAY       0x40
 
 #define QL_MAGIC            0x434d4c51u
-#define QL_ABI              1
+#define QL_ABI              2
+#define QL_ABI_MIN          1
+#define QL_PS_SLEEP         (1u << 0)
+#define QL_WAKE_UNICAST     (1u << 0)
+#define QL_WAKE_GROUP       (1u << 1)
 #define QL_CTRL_RUN         (1u << 0)
 #define QL_STATUS_PEND      (1u << 0)
 #define QL_RESULT_CNF       (1u << 0)
@@ -68,6 +76,13 @@ void change_cpu_freq(int fast);
 void HiInternal_Init(void **bufs, unsigned n);
 void HiInternal_ProgOutput(void *msg);
 void HiInternal_ProgramInput(void *msg);
+void lmac_SetPowerBusyEvent(uint32_t bits);
+void lmac_ClearPowerBusyEvent(uint32_t bits);
+void PWR_Init(void);
+void PWR_Wakeup(void);
+void APB_PowerResume(void);
+void TI_PowerResume(void);
+void TI_PowerResume_Ext(void);
 int printf(const char *fmt, ...);
 
 /* the LMAC packet memory (sm_region.o, kept) */

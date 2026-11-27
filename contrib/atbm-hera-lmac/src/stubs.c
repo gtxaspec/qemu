@@ -32,7 +32,6 @@ NOOP(LMAC_SetCtsToSelf_Enable)
 NOOP(Lmac_SetNullDataRetry)
 NOOP(Lmac_SetRetryTxLiveTime)
 NOOP(LMAC_SetRTSThreshold)
-NOOP(lmac_Wakeup)
 NOOP(LMC_FM_GetATBMIe)
 NOOP(LMC_Get_CCA_IdleRatio)
 NOOP(LMC_SetAPKeepAliveEnable)
@@ -69,7 +68,6 @@ NOOP(RX_InitDefragBuffers)
 NOOP(SET_LMAC_SLEEP_MODE)
 NOOP(SET_NOT_SUPPORT_AMPDU_FLAG)
 NOOP(Smart_config_enable)
-NOOP(SYS_PowerSuspend)
 
 uint8_t default6441_debug_print;
 uint32_t etf_monitor_reduce_power_consumption = 1;

@@ -50,7 +50,13 @@ it) and adds the shim's:
 `src/lmac_qemu.h` repeats the port's register map: keep it in step with
 `include/hw/net/atbm-hera-lmac.h`.
 
-Power save is not modelled: the shim keeps the chip from sleeping.
+Power save: the SDK's own sleep code (port.o's idle hook, pwr_ARESA.o)
+puts the chip in light sleep when nothing keeps it busy. The shim keeps
+it awake while a scan runs, or while it is joined with power save off,
+and with ABI 2 tells the port when the chip sleeps (`SYS_PowerSuspend()`)
+and wakes (`lmac_Wakeup()`): the port keeps the association, holds what
+the access point sends, and wakes the chip for a frame. On an ABI 1 port
+the chip still sleeps, and finds what came meanwhile when it wakes.
 
 ## Building
 

@@ -63,10 +63,28 @@
 #define EV_PORT             0x00100000u
 
 /*
- * The power-busy bit the shim holds so the idle task never puts the chip
- * to sleep: QEMU does not model the sleep the LMAC would arrange
+ * The power-busy bit the shim holds while the radio must stay on: during
+ * a scan, and while joined with the station's power save off. Power-busy
+ * bits keep port.o's idle hook from putting the chip in light sleep.
  */
 #define PWR_BUSY_QEMU       0x80000000u
+
+/* WSM ids the power-busy rule follows, less interface and sequence bits */
+#define WSM_START_SCAN      0x0007
+#define WSM_RESET           0x000a
+#define WSM_JOIN            0x000b
+#define WSM_SET_PM          0x0010
+#define WSM_SCAN_COMPLETE   0x0806
+#define WSM_PSM_PS          0x01
+
+/* the SMU's hardware control status, which the LMAC's wake sets */
+#define SMU_HW_CTRL_ST      0x1610013cu
+
+/* listen: the beacon interval the port waits before a frame wakes us */
+#define LISTEN_MS           102
+
+static int port_ps;         /* the port has the chip's power save (ABI 2) */
+static int scanning, joined, pm_ps;
 
 /*
  * hi_internal.o numbers what it hands HMAC itself (bits 13-15 of the id,
@@ -144,6 +162,40 @@ static void pools_init(void)
     }
 }
 
+static void busy_update(void)
+{
+    if (scanning || (joined && !pm_ps)) {
+        lmac_SetPowerBusyEvent(PWR_BUSY_QEMU);
+    } else {
+        lmac_ClearPowerBusyEvent(PWR_BUSY_QEMU);
+    }
+}
+
+/*
+ * What a request says about the radio's power: its id, its first body
+ * byte (a power save mode) and whether its confirm said success
+ */
+static void busy_track(unsigned id, uint8_t arg, int ok)
+{
+    switch (id & 0x3f) {
+    case WSM_START_SCAN:
+        scanning = 1;
+        break;
+    case WSM_JOIN:
+        joined = ok;
+        break;
+    case WSM_RESET:
+        joined = 0;
+        break;
+    case WSM_SET_PM:
+        pm_ps = arg & WSM_PSM_PS;
+        break;
+    default:
+        return;
+    }
+    busy_update();
+}
+
 /*
  * The LMAC's indication buffer allocator, which the SDIO host interface
  * and the SDIO demo use for their own messages to the host
@@ -210,6 +262,10 @@ static void port_drain(void)
             continue;
         }
         ((uint16_t *)buf)[1] &= WSM_ID_MASK;
+        if ((((uint16_t *)buf)[1] & WSM_ID_TYPE) == WSM_SCAN_COMPLETE) {
+            scanning = 0;
+            busy_update();
+        }
         if ((((uint16_t *)buf)[1] & WSM_ID_TYPE) == WSM_RECEIVE_IND) {
             int r = lmac_qemu_rx_route(buf);
 
@@ -233,12 +289,19 @@ static void port_drain(void)
  */
 int lmac_qemu_request(void *msg, unsigned size)
 {
+    uint8_t *b = msg;
+    unsigned id = b[2];
+    uint8_t arg = b[4];
+
     ql_write(QL_REQ_SIZE, size);
     ql_write(QL_REQ, (uint32_t)msg);
     if (!(ql_read(QL_REQ_RESULT) & QL_RESULT_CNF)) {
+        busy_track(id, arg, 0);
         return 0;
     }
     ((uint16_t *)msg)[1] &= WSM_ID_MASK;
+    /* the confirm is in the buffer now: its status opens the body */
+    busy_track(id, arg, !(b[4] | b[5] | b[6] | b[7]));
     return 1;
 }
 
@@ -277,8 +340,41 @@ void lmac_ClearPowerBusyEvent(uint32_t bits)
 {
     uint32_t psw = OS_DisableFiqIrq_Internal();
 
-    sPlatformGlobal[1] &= ~bits | PWR_BUSY_QEMU;
+    sPlatformGlobal[1] &= ~bits;
     OS_RestoreFiqIrq_Internal(psw);
+}
+
+/*
+ * The power: what the original's lmac_pwr.o and main.o did, short of the
+ * radio. pwr_ARESA.o (kept) does the sleep itself.
+ */
+void lmac_PowerInit(void)
+{
+    /* the flag the original sets in the LMAC's globals first */
+    sLmcGlobal[0x60b] = 1;
+    PWR_Init();
+}
+
+/* port.o: the chip is about to sleep, with the radio's state kept */
+void SYS_PowerSuspend(void)
+{
+    if (port_ps) {
+        ql_write(QL_PS, QL_PS_SLEEP);
+    }
+}
+
+/* port.o, after the sleep: the chip is back and the radio with it */
+void lmac_Wakeup(void)
+{
+    PWR_Wakeup();
+    sPlatformLocal[8]++;
+    APB_PowerResume();
+    TI_PowerResume();
+    TI_PowerResume_Ext();
+    if (port_ps) {
+        ql_write(QL_PS, 0);
+    }
+    *(volatile uint32_t *)SMU_HW_CTRL_ST = 1; /* MMIO */
 }
 
 /* The LMAC task: what the original's lmac_Main does short of the radio */
@@ -291,13 +387,18 @@ void lmac_Main(void)
     OS_DisableFiqIrq_Internal();
     APB_Init();
     printf("%s\n", SYS_SwTitle);
-    sPlatformGlobal[1] |= PWR_BUSY_QEMU;
+    lmac_PowerInit();
     HIF_Init();
     TI_Init();
 
-    if (ql_read(QL_ID) != QL_MAGIC || ql_read(QL_VERSION) != QL_ABI) {
+    if (ql_read(QL_ID) != QL_MAGIC || ql_read(QL_VERSION) < QL_ABI_MIN) {
         printf("lmac_qemu: no QEMU LMAC port at 0x%x (id 0x%x)\n",
                QL_BASE, ql_read(QL_ID));
+    }
+    port_ps = ql_read(QL_VERSION) >= QL_ABI;
+    if (port_ps) {
+        ql_write(QL_WAKE_MASK, QL_WAKE_UNICAST | QL_WAKE_GROUP);
+        ql_write(QL_WAKE_DELAY, LISTEN_MS);
     }
     ql_write(QL_CTRL, 0);
     pools_init();
