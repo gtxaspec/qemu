@@ -591,7 +591,9 @@ static void dwc2_attach(USBPort *port)
     trace_usb_dwc2_attach(port);
     assert(port->index == 0);
 
-    if (!port->dev || !port->dev->attached) {
+    /* In device mode the port waits: entering host mode attaches it */
+    if (!port->dev || !port->dev->attached ||
+        !(s->gintsts & GINTSTS_CURMODE_HOST)) {
         return;
     }
 
@@ -644,6 +646,9 @@ static void dwc2_detach(USBPort *port)
 
     dwc2_bus_stop(s);
 
+    if (!(s->gintsts & GINTSTS_CURMODE_HOST)) {
+        return;
+    }
     s->hprt0 &= ~(HPRT0_SPD_MASK | HPRT0_SUSP | HPRT0_ENA | HPRT0_CONNSTS);
     s->hprt0 |= HPRT0_CONNDET | HPRT0_ENACHG;
 
@@ -886,6 +891,52 @@ static const char *glbregnm[] = {
     "GREFCLK  ", "GINTMSK2 ", "GINTSTS2 "
 };
 
+/*
+ * The role the core runs in. GUSBCFG's ForceHstMode and ForceDevMode
+ * override the ID pin the databook says (host first if both are set, as
+ * for the FIFO banking); otherwise GOTGCTL's ConIDSts decides.
+ */
+static bool dwc2_role_host(DWC2State *s)
+{
+    if (s->gusbcfg & GUSBCFG_FORCEHOSTMODE) {
+        return true;
+    }
+    if (s->gusbcfg & GUSBCFG_FORCEDEVMODE) {
+        return false;
+    }
+    return !(s->gotgctl & GOTGCTL_CONID_B);
+}
+
+/*
+ * Follow a change of the role into GINTSTS.CurMod. The host half then
+ * starts over: leaving host mode drops the port, and entering it finds a
+ * device that stayed plugged in the way a first connect does.
+ */
+static void dwc2_role_update(DWC2State *s)
+{
+    bool host = dwc2_role_host(s);
+
+    if (host == !!(s->gintsts & GINTSTS_CURMODE_HOST)) {
+        return;
+    }
+    /* the driver starts its other half on this, forcing the mode included */
+    dwc2_raise_global_irq(s, GINTSTS_CONIDSTSCHNG);
+    if (host) {
+        s->gintsts |= GINTSTS_CURMODE_HOST;
+        dwc2_dev_check_connect(s);
+        if (s->uport.dev && s->uport.dev->attached) {
+            dwc2_attach(&s->uport);
+        }
+        return;
+    }
+    s->gintsts &= ~GINTSTS_CURMODE_HOST;
+    dwc2_bus_stop(s);
+    s->hprt0 &= ~(HPRT0_SPD_MASK | HPRT0_SUSP | HPRT0_ENA | HPRT0_CONNSTS |
+                  HPRT0_CONNDET | HPRT0_ENACHG);
+    dwc2_lower_global_irq(s, GINTSTS_PRTINT);
+    dwc2_dev_check_connect(s);
+}
+
 static uint64_t dwc2_glbreg_read(void *ptr, hwaddr addr, int index,
                                  unsigned size)
 {
@@ -901,6 +952,21 @@ static uint64_t dwc2_glbreg_read(void *ptr, hwaddr addr, int index,
     val = s->glbreg[index];
 
     switch (addr) {
+    case GOTGCTL:
+        /*
+         * The session valid bits follow the override the driver switches
+         * roles with (AValOEn/AValOVal, BValOEn/BValOVal); with no
+         * override the VBUS comparators read valid.
+         */
+        if (val & GOTGCTL_AVALOEN) {
+            val = (val & ~GOTGCTL_ASESVLD) |
+                  (val & GOTGCTL_AVALOVAL ? GOTGCTL_ASESVLD : 0);
+        }
+        if (val & GOTGCTL_BVALOEN) {
+            val = (val & ~GOTGCTL_BSESVLD) |
+                  (val & GOTGCTL_BVALOVAL ? GOTGCTL_BSESVLD : 0);
+        }
+        break;
     case GRSTCTL:
         /* clear any self-clearing bits that were set */
         val &= ~(GRSTCTL_TXFFLSH | GRSTCTL_RXFFLSH | GRSTCTL_IN_TKNQ_FLSH |
@@ -923,6 +989,7 @@ static void dwc2_glbreg_write(void *ptr, hwaddr addr, int index, uint64_t val,
     uint32_t *mmio;
     uint32_t old;
     int iflg = 0;
+    bool role = false;
 
     if (addr > GINTSTS2) {
         qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad offset 0x%"HWADDR_PRIx"\n",
@@ -951,21 +1018,14 @@ static void dwc2_glbreg_write(void *ptr, hwaddr addr, int index, uint64_t val,
                       GOTGCTL_ASESVLD | GOTGCTL_DBNC_SHORT |
                       GOTGCTL_HSTNEGSCS | GOTGCTL_SESREQSCS);
         if ((val & GOTGCTL_CONID_B) != (old & GOTGCTL_CONID_B)) {
-            /*
-             * CURMOD in GINTSTS bit 0 must track CONID inversely:
-             * CONID_B=1 -> peripheral, CURMOD_HOST=0
-             * CONID_B=0 -> host,       CURMOD_HOST=1
-             */
-            if (val & GOTGCTL_CONID_B) {
-                s->gintsts &= ~GINTSTS_CURMODE_HOST;
-            } else {
-                s->gintsts |= GINTSTS_CURMODE_HOST;
-            }
             *mmio = val;
+            dwc2_role_update(s);
             dwc2_raise_global_irq(s, GINTSTS_CONIDSTSCHNG);
-            dwc2_dev_check_connect(s);
             return;
         }
+        break;
+    case GUSBCFG:
+        role = 1;
         break;
     case GAHBCFG:
         if ((val & GAHBCFG_GLBL_INTR_EN) && !(old & GAHBCFG_GLBL_INTR_EN)) {
@@ -1052,6 +1112,9 @@ static void dwc2_glbreg_write(void *ptr, hwaddr addr, int index, uint64_t val,
 
     trace_usb_dwc2_glbreg_write(addr, glbregnm[index], orig, old, val);
     *mmio = val;
+    if (role) {
+        dwc2_role_update(s);
+    }
 
     if (iflg) {
         dwc2_update_irq(s);
@@ -1818,6 +1881,173 @@ static bool dwc2_dev_dma(DWC2State *s, int ep, bool in, uint32_t addr,
     return true;
 }
 
+/*
+ * Descriptor DMA. With DCFG.DescDMA set DxEPDMAn points at a chain of
+ * 8 byte descriptors (status quadlet, buffer pointer) instead of a
+ * buffer, and DxEPTSIZn is not used. The core takes the descriptor DxEPDMAn
+ * names while it is Host Ready, moves one packet per token through its
+ * buffer, and closes it with the bytes not moved and a DMA Done status;
+ * DxEPDMAn then names the next one, unless it was the last. A descriptor
+ * with L ends the transfer, IOC raises XferCompl.
+ */
+static bool dwc2_dev_ddma(DWC2State *s)
+{
+    return dwc2_dev_engine(s) && (s->ghwcfg4 & GHWCFG4_DESC_DMA) &&
+           (*dwc2_dreg(s, DCFG) & DCFG_DESCDMA_EN);
+}
+
+static uint32_t dwc2_ddma_nbytes_mask(DWC2State *s, int ep, bool in)
+{
+    uint32_t ctl = *dwc2_dreg(s, in ? DIEPCTL(ep) : DOEPCTL(ep));
+
+    if (ep && (ctl & DXEPCTL_EPTYPE_MASK) == DXEPCTL_EPTYPE_ISO) {
+        return in ? DEV_DMA_ISOC_TX_NBYTES_MASK : DEV_DMA_ISOC_RX_NBYTES_MASK;
+    }
+    return DEV_DMA_NBYTES_MASK;
+}
+
+/* False when the endpoint has no Host Ready descriptor to work on. */
+static bool dwc2_ddma_fetch(DWC2State *s, int ep, bool in,
+                            struct dwc2_dma_desc *d)
+{
+    uint32_t addr = *dwc2_dreg(s, in ? DIEPDMA(ep) : DOEPDMA(ep));
+    uint8_t raw[8];
+
+    if (dma_memory_read(&s->dma_as, addr & 0x1FFFFFFF, raw, sizeof(raw),
+                        MEMTXATTRS_UNSPECIFIED) != MEMTX_OK) {
+        qemu_log_mask(LOG_GUEST_ERROR, "%s: ep%d%s descriptor at 0x%08x "
+                      "unreadable\n", __func__, ep, in ? "in" : "out", addr);
+        dwc2_dev_ep_intr(s, ep, in, DXEPINT_AHBERR);
+        return false;
+    }
+    d->status = ldl_le_p(raw);
+    d->buf = ldl_le_p(raw + 4);
+    if ((d->status & DEV_DMA_BUFF_STS_MASK) >> DEV_DMA_BUFF_STS_SHIFT !=
+        DEV_DMA_BUFF_STS_HREADY) {
+        dwc2_dev_ep_intr(s, ep, in, DXEPINT_BNAINTR);
+        return false;
+    }
+    return true;
+}
+
+/*
+ * The descriptor is done: write its status back with what is left of
+ * its buffer, move DxEPDMAn on to the next, and end the transfer when it
+ * was the last one or, inferred (the databook does not say what the core
+ * does with the rest of a chain), a short packet ended an OUT transfer.
+ */
+static void dwc2_ddma_close(DWC2State *s, int ep, bool in,
+                            const struct dwc2_dma_desc *d, uint32_t left,
+                            bool setup, bool short_pkt)
+{
+    uint32_t *dma = dwc2_dreg(s, in ? DIEPDMA(ep) : DOEPDMA(ep));
+    uint32_t *ctl = dwc2_dreg(s, in ? DIEPCTL(ep) : DOEPCTL(ep));
+    uint32_t mask = dwc2_ddma_nbytes_mask(s, ep, in);
+    int idx = ep * 2 + in;
+    uint32_t status;
+    uint8_t raw[4];
+    bool last = d->status & DEV_DMA_L;
+
+    status = (d->status & ~(DEV_DMA_BUFF_STS_MASK | DEV_DMA_STS_MASK | mask)) |
+             (DEV_DMA_BUFF_STS_DMADONE << DEV_DMA_BUFF_STS_SHIFT) |
+             (left & mask);
+    if (setup) {
+        status |= DEV_DMA_SR;
+    }
+    stl_le_p(raw, status);
+    dma_memory_write(&s->dma_as, *dma & 0x1FFFFFFF, raw, sizeof(raw),
+                     MEMTXATTRS_UNSPECIFIED);
+    trace_usb_dwc2_dev_ddma(ep, in, *dma, status);
+
+    /*
+     * DxEPDMAn stays on a last descriptor: the driver starts EP0's status
+     * stage by rewriting that descriptor, without writing the register.
+     */
+    if (!last) {
+        *dma += sizeof(struct dwc2_dma_desc);
+    }
+    s->ddma_off[idx] = 0;
+    s->ddma_zlp &= ~(1u << idx);
+
+    if (last || (!in && short_pkt)) {
+        *ctl &= ~DXEPCTL_EPENA;
+        if (!in) {
+            *ctl |= DXEPCTL_NAKSTS;
+        }
+        if (!last || (d->status & DEV_DMA_IOC)) {
+            dwc2_dev_ep_intr(s, ep, in, DXEPINT_XFERCOMPL);
+        }
+    } else if (d->status & DEV_DMA_IOC) {
+        dwc2_dev_ep_intr(s, ep, in, DXEPINT_XFERCOMPL);
+    }
+}
+
+/* One IN token: the packet of the current descriptor; returns its length. */
+static int dwc2_ddma_in(DWC2State *s, int ep, uint8_t *data, int maxlen)
+{
+    int idx = ep * 2 + 1;
+    struct dwc2_dma_desc d;
+    uint32_t nbytes, off, mps, len;
+    bool zlp = s->ddma_zlp & (1u << idx);
+
+    if (!dwc2_ddma_fetch(s, ep, true, &d)) {
+        return DWC2_DEV_NAK;
+    }
+    nbytes = d.status & dwc2_ddma_nbytes_mask(s, ep, true);
+    off = s->ddma_off[idx];
+    mps = dwc2_dev_mps(s, ep, true);
+    len = zlp ? 0 : MIN(MIN(nbytes - off, mps), (uint32_t)maxlen);
+    if (!dwc2_dev_dma(s, ep, true, d.buf + off, data, len,
+                      DMA_DIRECTION_TO_DEVICE)) {
+        return DWC2_DEV_NAK;
+    }
+    off += len;
+    trace_usb_dwc2_dev_in(ep, len, nbytes - off);
+
+    if (!zlp && off >= nbytes && nbytes && !(nbytes % mps) &&
+        (d.status & DEV_DMA_SHORT)) {
+        /* SP on a whole number of packets asks for a zero-length one */
+        s->ddma_off[idx] = off;
+        s->ddma_zlp |= 1u << idx;
+    } else if (off >= nbytes) {
+        dwc2_ddma_close(s, ep, true, &d, 0, false, false);
+    } else {
+        s->ddma_off[idx] = off;
+    }
+    return len;
+}
+
+/* One packet to an OUT endpoint, or a SETUP packet to EP0. */
+static int dwc2_ddma_rx(DWC2State *s, int ep, const uint8_t *data, int len,
+                        bool setup)
+{
+    int idx = ep * 2;
+    struct dwc2_dma_desc d;
+    uint32_t nbytes, off, n;
+    bool short_pkt;
+
+    if (!dwc2_ddma_fetch(s, ep, false, &d)) {
+        return DWC2_DEV_NAK;
+    }
+    nbytes = d.status & dwc2_ddma_nbytes_mask(s, ep, false);
+    off = s->ddma_off[idx];
+    n = MIN((uint32_t)len, nbytes - off);
+    if (!dwc2_dev_dma(s, ep, false, d.buf + off, (uint8_t *)data, n,
+                      DMA_DIRECTION_FROM_DEVICE)) {
+        return DWC2_DEV_NAK;
+    }
+    off += n;
+    short_pkt = setup || len < dwc2_dev_mps(s, ep, false);
+    trace_usb_dwc2_dev_out(ep, len, nbytes - off);
+
+    if (setup || short_pkt || off >= nbytes) {
+        dwc2_ddma_close(s, ep, false, &d, nbytes - off, setup, short_pkt);
+    } else {
+        s->ddma_off[idx] = off;
+    }
+    return 0;
+}
+
 static bool dwc2_dev_pullup_on(DWC2State *s)
 {
     return dwc2_dev_engine(s) && !(s->gintsts & GINTSTS_CURMODE_HOST) &&
@@ -1853,6 +2083,9 @@ static void dwc2_dev_soft_reset(DWC2State *s)
         *dwc2_dreg(s, DOEPINT(ep)) = 0;
     }
     *dwc2_dreg(s, DSTS) = 0;
+    memset(s->ddma_off, 0, sizeof(s->ddma_off));
+    s->ddma_zlp = 0;
+    s->ddma_wrdata = false;
     *dwc2_dreg(s, DCTL) &= ~(DCTL_GNPINNAKSTS | DCTL_GOUTNAKSTS);
     s->gintsts &= ~(GINTSTS_GINNAKEFF | GINTSTS_GOUTNAKEFF |
                     GINTSTS_USBRST | GINTSTS_ENUMDONE);
@@ -1905,6 +2138,10 @@ static void dwc2_dev_epctl_write(DWC2State *s, int ep, bool in, uint32_t val)
 
     /* Software can set EPEna but only the core clears it. */
     new = (val & ~(cmds | core)) | (*ctl & core) | (val & DXEPCTL_EPENA);
+    if ((val & DXEPCTL_EPENA) && !(*ctl & DXEPCTL_EPENA)) {
+        s->ddma_off[ep * 2 + in] = 0;
+        s->ddma_zlp &= ~(1u << (ep * 2 + in));
+    }
     if (ep == 0) {
         new |= DXEPCTL_USBACTEP;
     }
@@ -1966,6 +2203,13 @@ static void dwc2_dev_write(DWC2State *s, hwaddr addr, uint32_t val)
         return;
     case DSTS:
     case DAINT:
+        return;
+    case DCFG:
+        /* DescDMA reads back as set only on a core built with it */
+        if (!(s->ghwcfg4 & GHWCFG4_DESC_DMA)) {
+            val &= ~DCFG_DESCDMA_EN;
+        }
+        *dwc2_dreg(s, addr) = val;
         return;
     case DIEPMSK:
     case DOEPMSK:
@@ -2050,6 +2294,22 @@ int dwc2_dev_setup(DWC2State *s, const uint8_t *setup)
         ret = DWC2_DEV_NODEV;
         goto out;
     }
+    if (dwc2_dev_ddma(s)) {
+        s->ddma_wrdata = false;
+        if (!(*ctl & DXEPCTL_EPENA)) {
+            ret = DWC2_DEV_NAK;
+            goto out;
+        }
+        ret = dwc2_ddma_rx(s, 0, setup, 8, true);
+        if (ret) {
+            goto out;
+        }
+        *ctl = (*ctl & ~DXEPCTL_STALL) | DXEPCTL_NAKSTS;
+        *dwc2_dreg(s, DIEPCTL(0)) = (*dwc2_dreg(s, DIEPCTL(0)) &
+                                     ~DXEPCTL_STALL) | DXEPCTL_NAKSTS;
+        dwc2_dev_ep_intr(s, 0, false, DXEPINT_SETUP);
+        goto out;
+    }
     supcnt = (*tsiz & DOEPTSIZ0_SUPCNT_MASK) >> DOEPTSIZ0_SUPCNT_SHIFT;
     /*
      * SETUP packets are taken while SUPCnt is non-zero even with the
@@ -2103,6 +2363,14 @@ int dwc2_dev_out(DWC2State *s, int ep, const uint8_t *data, int len)
         (*dwc2_dreg(s, DCTL) & DCTL_GOUTNAKSTS)) {
         return DWC2_DEV_NAK;
     }
+    if (dwc2_dev_ddma(s)) {
+        int r = dwc2_ddma_rx(s, ep, data, len, false);
+
+        if (!r && !ep) {
+            s->ddma_wrdata |= len > 0;
+        }
+        return r;
+    }
     tsiz = dwc2_dreg(s, DOEPTSIZ(ep));
     dwc2_dev_tsiz_get(ep, false, *tsiz, &xfer, &pkt);
     if (!pkt) {
@@ -2143,6 +2411,17 @@ int dwc2_dev_in(DWC2State *s, int ep, uint8_t *data, int maxlen)
         return DWC2_DEV_STALL;
     }
     type = *ctl & DXEPCTL_EPTYPE_MASK;
+    if (!ep && s->ddma_wrdata && dwc2_dev_ddma(s) &&
+        !(*dwc2_dreg(s, DOEPINT(0)) & DXEPINT_XFERCOMPL)) {
+        /*
+         * The IN token of a control write's status stage, taken once its
+         * data was in memory: the core tells the driver, which then
+         * starts the status packet. Inferred from the databook text and
+         * the driver, which starts nothing in DDMA until it hears this.
+         */
+        s->ddma_wrdata = false;
+        dwc2_dev_ep_intr(s, 0, false, DXEPINT_STSPHSERCVD);
+    }
     if (!(*ctl & DXEPCTL_EPENA) || (*ctl & DXEPCTL_NAKSTS) ||
         (ep && !(*ctl & DXEPCTL_USBACTEP)) ||
         ((*dwc2_dreg(s, DCTL) & DCTL_GNPINNAKSTS) &&
@@ -2160,6 +2439,9 @@ int dwc2_dev_in(DWC2State *s, int ep, uint8_t *data, int maxlen)
     if (*dwc2_dreg(s, DIEPINT(ep)) & *dwc2_dreg(s, DIEPMSK) &
         DXEPINT_XFERCOMPL) {
         return DWC2_DEV_NAK;
+    }
+    if (dwc2_dev_ddma(s)) {
+        return dwc2_ddma_in(s, ep, data, maxlen);
     }
     tsiz = dwc2_dreg(s, DIEPTSIZ(ep));
     dwc2_dev_tsiz_get(ep, true, *tsiz, &xfer, &pkt);
@@ -2540,6 +2822,9 @@ static void dwc2_reset_enter(Object *obj, ResetType type)
             s->peer_ops->connect(s->peer, false);
         }
     }
+    memset(s->ddma_off, 0, sizeof(s->ddma_off));
+    s->ddma_zlp = 0;
+    s->ddma_wrdata = false;
     s->g_step = 0;
     s->g_armed = false;
     s->g_armed_intr = 0;
@@ -2662,15 +2947,13 @@ static void dwc2_otg_id_change(void *opaque, int n, int level)
 
     if (level) {
         s->gotgctl |= GOTGCTL_CONID_B;
-        s->gintsts &= ~GINTSTS_CURMODE_HOST;
     } else {
         s->gotgctl &= ~GOTGCTL_CONID_B;
-        s->gintsts |= GINTSTS_CURMODE_HOST;
     }
+    dwc2_role_update(s);
     /* Pulse PRTINT to force a recheck if the line was already asserted. */
     dwc2_lower_global_irq(s, GINTSTS_CONIDSTSCHNG);
     dwc2_raise_global_irq(s, GINTSTS_CONIDSTSCHNG);
-    dwc2_dev_check_connect(s);
 }
 
 static void dwc2_init(Object *obj)
@@ -2728,7 +3011,7 @@ static int dwc2_post_load(void *opaque, int version_id)
 
 const VMStateDescription vmstate_dwc2_state = {
     .name = "dwc2",
-    .version_id = 4,
+    .version_id = 5,
     .minimum_version_id = 4,
     .post_load = dwc2_post_load,
     .fields = (const VMStateField[]) {
@@ -2749,6 +3032,9 @@ const VMStateDescription vmstate_dwc2_state = {
         VMSTATE_TIMER_PTR_V(id_timer, DWC2State, 3),
         VMSTATE_BOOL_V(id_reported, DWC2State, 3),
         VMSTATE_UINT32_V(periodic, DWC2State, 3),
+        VMSTATE_UINT32_ARRAY_V(ddma_off, DWC2State, 32, 5),
+        VMSTATE_UINT32_V(ddma_zlp, DWC2State, 5),
+        VMSTATE_BOOL_V(ddma_wrdata, DWC2State, 5),
 
         VMSTATE_TIMER_PTR(eof_timer, DWC2State),
         VMSTATE_TIMER_PTR(frame_timer, DWC2State),

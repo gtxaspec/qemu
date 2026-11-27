@@ -222,6 +222,15 @@ struct DWC2State {
     bool dev_pullup;           /* last pull-up state reported to the peer */
 
     /*
+     * Descriptor DMA progress, per endpoint and direction (ep * 2 + IN):
+     * bytes already moved through the descriptor DxEPDMA points at, and
+     * the endpoints that owe a zero-length packet after it.
+     */
+    uint32_t ddma_off[32];
+    uint32_t ddma_zlp;
+    bool ddma_wrdata;          /* EP0 control write has had its data stage */
+
+    /*
      * Core configuration read back as GSNPSID and GHWCFG1-4, and the
      * limits the model derives from it in realize.
      */

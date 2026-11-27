@@ -11,6 +11,10 @@
  * frame boundary), and for H.264 from the first IDR picture on, with a
  * frame of the other format left over from the first stream skipped.
  *
+ * Run twice: the gadget in buffer DMA, and in descriptor DMA the way the
+ * mainline driver programs it, one descriptor per transfer, the status
+ * stage of a control write started on StsPhseRcvd.
+ *
  * Copyright (C) 2026 Alfonso Gamboa <gtxent@gmail.com>
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
@@ -26,6 +30,9 @@
 #define OTG             0x13500000
 #define SETUP_BUF       0x01000000      /* setup packet, then OUT data */
 #define IN_BUF          0x01001000
+#define DESC_EP0_OUT    0x01003000      /* descriptor DMA: one per endpoint */
+#define DESC_EP0_IN     0x01003010
+#define DESC_BULK_IN    0x01003020
 #define BULK_BUF        0x01002000
 #define BULK_MPS        512
 #define PROBE_LEN       26
@@ -39,6 +46,7 @@ static const uint8_t guid_h264[16] = {
 
 typedef struct {
     QTestState *qts;
+    bool ddma;
     uint8_t cfg[256];
     int cfg_len;
     uint8_t probe[PROBE_LEN];
@@ -100,11 +108,29 @@ static void build_config(Gadget *g)
     g->cfg_len = n;
 }
 
+static void desc_put(Gadget *g, uint32_t addr, uint32_t status, uint32_t buf)
+{
+    uint32_t d[2] = { cpu_to_le32(status), cpu_to_le32(buf) };
+
+    qtest_memwrite(g->qts, addr, d, sizeof(d));
+}
+
+/* A Host Ready descriptor for the whole transfer */
+static uint32_t ddma_status(uint32_t len, bool sp)
+{
+    return DEV_DMA_L | DEV_DMA_IOC | (sp ? DEV_DMA_SHORT : 0) | len;
+}
+
 /* Take the next SETUP packet and be ready for the data and status stages. */
 static void arm_ep0_out(Gadget *g)
 {
-    reg_w(g, DOEPDMA(0), g->arm);
-    reg_w(g, DOEPTSIZ(0), DOEPTSIZ0_SUPCNT(3) | DOEPTSIZ0_PKTCNT | 64);
+    if (g->ddma) {
+        desc_put(g, DESC_EP0_OUT, ddma_status(64, false), g->arm);
+        reg_w(g, DOEPDMA(0), DESC_EP0_OUT);
+    } else {
+        reg_w(g, DOEPDMA(0), g->arm);
+        reg_w(g, DOEPTSIZ(0), DOEPTSIZ0_SUPCNT(3) | DOEPTSIZ0_PKTCNT | 64);
+    }
     reg_w(g, DOEPCTL(0), EPENA_CNAK);
 }
 
@@ -113,8 +139,13 @@ static void arm_ep0_in(Gadget *g, const uint8_t *data, int len)
     if (len) {
         qtest_memwrite(g->qts, IN_BUF, data, len);
     }
-    reg_w(g, DIEPDMA(0), IN_BUF);
-    reg_w(g, DIEPTSIZ(0), DIEPTSIZ0_PKTCNT((len + 63) / 64 ? : 1) | len);
+    if (g->ddma) {
+        desc_put(g, DESC_EP0_IN, ddma_status(len, len % 64), IN_BUF);
+        reg_w(g, DIEPDMA(0), DESC_EP0_IN);
+    } else {
+        reg_w(g, DIEPDMA(0), IN_BUF);
+        reg_w(g, DIEPTSIZ(0), DIEPTSIZ0_PKTCNT((len + 63) / 64 ? : 1) | len);
+    }
     reg_w(g, DIEPCTL(0), EPENA_CNAK);
 }
 
@@ -123,8 +154,13 @@ static void send_payload(Gadget *g, const uint8_t *data, int len)
     uint32_t pkts = len ? (len + BULK_MPS - 1) / BULK_MPS : 1;
 
     qtest_memwrite(g->qts, BULK_BUF, data, len);
-    reg_w(g, DIEPDMA(1), BULK_BUF);
-    reg_w(g, DIEPTSIZ(1), (pkts << 19) | len);
+    if (g->ddma) {
+        desc_put(g, DESC_BULK_IN, ddma_status(len, len % BULK_MPS), BULK_BUF);
+        reg_w(g, DIEPDMA(1), DESC_BULK_IN);
+    } else {
+        reg_w(g, DIEPDMA(1), BULK_BUF);
+        reg_w(g, DIEPTSIZ(1), (pkts << 19) | len);
+    }
     reg_w(g, DIEPCTL(1), DXEPCTL_EPENA | DXEPCTL_CNAK | DXEPCTL_USBACTEP |
           DXEPCTL_EPTYPE_BULK | BULK_MPS);
 }
@@ -262,16 +298,19 @@ static void control_data(Gadget *g)
     }
     g->arm ^= 0x100;
     arm_ep0_out(g);
-    arm_ep0_in(g, NULL, 0);
+    /* in descriptor DMA the core says when the status stage starts */
+    if (!g->ddma) {
+        arm_ep0_in(g, NULL, 0);
+    }
     g->pending_set = 0;
 }
 
-static void test_uvc_host(void)
+static void test_uvc_host(const void *data)
 {
     g_autofree char *dir = g_dir_make_tmp("uvc-test-XXXXXX", NULL);
     g_autofree char *mjpg = g_strdup_printf("%s/uvc-0.mjpg", dir);
     g_autofree char *h264 = g_strdup_printf("%s/uvc-1.h264", dir);
-    Gadget g = { 0 };
+    Gadget g = { .ddma = data != NULL };
     QDict *rsp;
     g_autofree char *state = NULL;
     char *got = NULL;
@@ -288,6 +327,9 @@ static void test_uvc_host(void)
 
     /* Device mode, pull-up on, ready for the first SETUP. */
     reg_w(&g, GOTGCTL, GOTGCTL_CONID_B);
+    if (g.ddma) {
+        reg_w(&g, DCFG, reg_r(&g, DCFG) | DCFG_DESCDMA_EN);
+    }
     arm_ep0_out(&g);
     reg_w(&g, DCTL, 0);
 
@@ -301,15 +343,30 @@ static void test_uvc_host(void)
                   DXEPINT_XFERCOMPL);
             qtest_memread(g.qts, g.arm, s, 8);
             control_setup(&g, s);
+        } else if (g.ddma && (oint & DXEPINT_STSPHSERCVD)) {
+            reg_w(&g, DOEPINT(0), DXEPINT_STSPHSERCVD);
+            arm_ep0_in(&g, NULL, 0);
         } else if ((oint & DXEPINT_XFERCOMPL) && g.pending_set) {
             reg_w(&g, DOEPINT(0), DXEPINT_XFERCOMPL);
             control_data(&g);
         } else if (oint & DXEPINT_XFERCOMPL) {
             reg_w(&g, DOEPINT(0), DXEPINT_XFERCOMPL);
+            /* the status stage used the descriptor: the next SETUP needs one */
+            if (g.ddma) {
+                arm_ep0_out(&g);
+            }
         }
         if (g.committed_format && streamed < g.committed_format) {
             /* The commit's status stage must finish before the stream. */
+            if (g.ddma) {
+                /* the status stage starts on StsPhseRcvd; not yet seen */
+                reg_w(&g, DIEPINT(0), DXEPINT_XFERCOMPL);
+            }
             while (!(reg_r(&g, DIEPINT(0)) & DXEPINT_XFERCOMPL)) {
+                if (g.ddma && (reg_r(&g, DOEPINT(0)) & DXEPINT_STSPHSERCVD)) {
+                    reg_w(&g, DOEPINT(0), DXEPINT_STSPHSERCVD);
+                    arm_ep0_in(&g, NULL, 0);
+                }
                 qtest_clock_step(g.qts, 100000);
             }
             reg_w(&g, DIEPINT(0), DXEPINT_XFERCOMPL);
@@ -366,6 +423,7 @@ static void test_uvc_host(void)
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
-    qtest_add_func("ingenic/dwc2-uvc-host", test_uvc_host);
+    qtest_add_data_func("ingenic/dwc2-uvc-host", NULL, test_uvc_host);
+    qtest_add_data_func("ingenic/dwc2-uvc-host-ddma", "ddma", test_uvc_host);
     return g_test_run();
 }

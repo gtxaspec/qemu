@@ -250,6 +250,7 @@ usb_dwc2_dev_setup(uint32_t w0, uint32_t w1, int ret) "0x%08x 0x%08x ret %d"
 usb_dwc2_dev_in(int ep, int len, uint32_t pktcnt) "ep%d len %d pktcnt left %u"
 usb_dwc2_dev_out(int ep, int len, uint32_t pktcnt) "ep%d len %d pktcnt left %u"
 usb_dwc2_dev_xfercompl(int ep, int in) "ep%d in %d"
+usb_dwc2_dev_ddma(int ep, int in, uint32_t desc, uint32_t status) "ep%d in %d desc 0x%08x closed 0x%08x"
 
 # dwc2-ncm-host.c
 dwc2_ncm_state(const char *state) "%s"
