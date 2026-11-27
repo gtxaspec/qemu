@@ -23,8 +23,9 @@
  *
  * Lines (for a SoC wired to the chip): input "pin" n drives pad n; output
  * "out" n is the level the chip drives or, with the channel an input, its
- * pull; output "oe" n says whether the chip drives it. One interrupt, which
- * is the chip's number 23.
+ * pull; output "oe" n says whether the chip drives it; output "level" n is
+ * the pad's level as DIN reads it (for the power controller's wake
+ * pins). One interrupt, which is the chip's number 23.
  *
  * Not modelled: the function selection (a pad given to a UART, SPI or PWM
  * still reads as a GPIO), the debounce.
@@ -83,6 +84,7 @@ struct AtbmHeraGpioState {
     qemu_irq irq;
     qemu_irq out[NGPIO];
     qemu_irq oe[NGPIO];
+    qemu_irq level[NGPIO];
 
     uint32_t dout;
     uint32_t dir0;
@@ -153,6 +155,11 @@ static void gpio_refresh(AtbmHeraGpioState *s)
             (mode == MODE_RISE && (changed & BIT(n)) && lvl) ||
             (mode == MODE_BOTH && (changed & BIT(n)))) {
             s->intst |= BIT(n);
+        }
+    }
+    for (int n = 0; n < NGPIO; n++) {
+        if (changed & BIT(n)) {
+            qemu_set_irq(s->level[n], !!(now & BIT(n)));
         }
     }
     s->pins = now;
@@ -350,6 +357,7 @@ static void gpio_init(Object *obj)
     qdev_init_gpio_in_named(DEVICE(obj), gpio_pin_in, "pin", NGPIO);
     qdev_init_gpio_out_named(DEVICE(obj), s->out, "out", NGPIO);
     qdev_init_gpio_out_named(DEVICE(obj), s->oe, "oe", NGPIO);
+    qdev_init_gpio_out_named(DEVICE(obj), s->level, "level", NGPIO);
 }
 
 static const VMStateDescription vmstate_gpio = {
