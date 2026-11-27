@@ -385,7 +385,9 @@ static uint32_t aip_f_blend(uint32_t a, uint32_t b, uint32_t d, uint32_t e,
  * A pixel's bytes blend apart, and so do the 2- and 4-bit fields of the
  * feature formats (LSB first). Chroma is resampled at the even luma
  * positions, each UV pair standing for a 2x2 block of luma; an odd size
- * keeps its last half pair and line.
+ * keeps its last half pair and line. An odd output width writes no more
+ * than its width of chroma bytes (a T41NQ's output sum says so); the A1
+ * SDK's C model fills the last pair whole.
  */
 static void aip_f_plane(IngenicAipState *s, hwaddr src, hwaddr dst,
                         uint32_t sw, uint32_t sh, uint32_t dw, uint32_t dh,

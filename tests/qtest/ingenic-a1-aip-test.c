@@ -7,6 +7,8 @@
  * (T and F) or a 64x32 one of pseudo-random bytes (P), and the outputs are
  * the T41NQ's, as ingenic-aip-test checks them: T's colour conversion in
  * two steps of eight lines, F's copy at half size, and P's rotation.
+ * F also resizes pictures of the A1 SDK model's (aip_f_model) NV12 and feature
+ * map formats to its bytes (ingenic-a1-aip-f-vectors.h).
  * A T step raises status 0x9 (the A1 driver waits for bit 3 or 1). Then each
  * unit's interrupt shows in the INTC's source register while its
  * status holds and goes when it is cleared.
@@ -41,6 +43,20 @@ static const uint32_t bt601[9] = {
     0x00129fbe, 0x002049ba, 0, 0x00129fbe, 0xfff9be77, 0xfff2fdf4,
     0x00129fbe, 0, 0x00198937,
 };
+
+/* One F job: a box of fmt's pictures resized, and what the model made of it */
+typedef struct {
+    const char *name;
+    int fmt, sw, sh, dw, dh, sstride, dstride, off, offuv;
+    int scale_x, scale_y, trans_x, trans_y;
+    size_t ysize;
+    const uint8_t *src;
+    size_t srclen;
+    const uint8_t *dst;
+    size_t dstlen;
+} FVec;
+
+#include "ingenic-a1-aip-f-vectors.h"
 
 static QTestState *setup(void)
 {
@@ -134,6 +150,35 @@ static void test_f_half(void)
     g_assert_cmphex(crc(qts, DST_UV, 2 * W), ==, 0x24d4dcf4);
     qtest_writel(qts, AIP_F + IQR, 1);
     g_assert_cmphex(qtest_readl(qts, INTC_ISR1) >> 7 & 1, ==, 0);
+    qtest_quit(qts);
+}
+
+static void test_f_vec(const void *data)
+{
+    const FVec *v = data;
+    QTestState *qts = qtest_init("-machine ingenic-a1");
+    g_autofree uint8_t *fill = g_malloc(v->dstlen);
+    g_autofree uint8_t *got = g_malloc(v->dstlen);
+
+    memset(fill, 0x5a, v->dstlen);
+    qtest_memwrite(qts, DST, fill, v->dstlen);
+    qtest_memwrite(qts, SRC_Y, v->src, v->srclen);
+    qtest_writel(qts, AIP_F + CFG, v->fmt << 7);
+    qtest_writel(qts, AIP_F + 0x10, v->scale_x);
+    qtest_writel(qts, AIP_F + 0x14, v->scale_y);
+    qtest_writel(qts, AIP_F + 0x18, v->trans_x);
+    qtest_writel(qts, AIP_F + 0x1c, v->trans_y);
+    qtest_writel(qts, AIP_F + 0x20, SRC_Y + v->off);
+    qtest_writel(qts, AIP_F + 0x24, SRC_Y + v->ysize + v->offuv);
+    qtest_writel(qts, AIP_F + 0x28, DST);
+    qtest_writel(qts, AIP_F + 0x2c, DST + v->dstride * v->dh);
+    qtest_writel(qts, AIP_F + 0x30, v->sh << 16 | v->sw);
+    qtest_writel(qts, AIP_F + 0x34, v->dh << 16 | v->dw);
+    qtest_writel(qts, AIP_F + 0x38, v->dstride << 16 | v->sstride);
+    qtest_writel(qts, AIP_F + CTRL, 1);
+    g_assert_cmphex(qtest_readl(qts, AIP_F + IQR) & 1, ==, 1);
+    qtest_memread(qts, DST, got, v->dstlen);
+    g_assert_cmpmem(got, v->dstlen, v->dst, v->dstlen);
     qtest_quit(qts);
 }
 
@@ -266,5 +311,11 @@ int main(int argc, char **argv)
     qtest_add_func("ingenic/a1-aip/p-warp", test_p_warp);
     qtest_add_func("ingenic/a1-aip/a1n-regs", test_a1n_regs);
     qtest_add_func("ingenic/a1-aip/t-empty", test_t_empty);
+    for (int i = 0; i < ARRAY_SIZE(f_vecs); i++) {
+        g_autofree char *path = g_strdup_printf("ingenic/a1-aip/f-%s",
+                                                f_vecs[i].name);
+
+        qtest_add_data_func(path, &f_vecs[i], test_f_vec);
+    }
     return g_test_run();
 }
