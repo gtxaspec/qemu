@@ -316,6 +316,55 @@ static void pio_run(Aes *a, const AesVec *v, bool dec,
     }
 }
 
+/*
+ * The T33 SDK driver's per-mode ASCR bits: CBC encrypt EDIN|EDOUT, CBC
+ * decrypt EDOUT alone, ECB none. Memory is then in byte order for the
+ * encrypt, and the decrypt reads its input as little-endian words, so the
+ * SDK's own round trip (test_aes.c, aes_crypt_hw_optimized) reverses each
+ * four bytes of the ciphertext between the two.
+ */
+static void t33_vendor_cbc(const AesPart *p)
+{
+    Aes a = { .p = p };
+    const AesVec *v = &vecs[6];
+    uint8_t pt[64], ct[64], buf[64], sw[64];
+    size_t n = unhex(v->pt, pt);
+
+    unhex(v->ct, ct);
+    a.qts = qtest_initf("-machine %s", p->machine);
+    aes_reg_init(&a);
+
+    for (int dec = 0; dec < 2; dec++) {
+        uint32_t ed = dec ? ASCR_EDOUT : ASCR_EDIN | ASCR_EDOUT;
+        const uint8_t *in = pt;
+
+        if (dec) {
+            for (size_t i = 0; i < n; i += 4) {
+                stl_le_p(sw + i, ldl_be_p(ct + i));
+            }
+            in = sw;
+        }
+        ssr_clear(&a, ~0u);
+        wr(&a, ASINTM, a.dmad | a.aesd);
+        wr(&a, ASCR, ASCR_CLR | ASCR_EN);
+        wr(&a, ASCR, ASCR_EN | ASCR_DMAE | ASCR_CBC | keyl(v) |
+                     (dec ? ASCR_DECE : 0) | ed);
+        load_key_iv(&a, v);
+        qtest_memwrite(a.qts, SRC, in, n);
+        wr(&a, ASSA, SRC);
+        wr(&a, a.asda, DST);
+        wr(&a, 0x10, n / 4);
+        wr(&a, 0x18, n / 4);
+        wr(&a, 0x1c, n / 16);
+        ascr_or(&a, ASCR_DMAS);
+        g_assert_cmphex(rd(&a, ASSR) & a.dmad, ==, a.dmad);
+        qtest_memread(a.qts, DST, buf, n);
+        expect(p, v, dec ? "vendor decrypt" : "vendor encrypt", buf,
+               dec ? pt : ct, n);
+    }
+    qtest_quit(a.qts);
+}
+
 static void test_part(const void *data)
 {
     const AesPart *p = data;
@@ -358,6 +407,9 @@ static void test_part(const void *data)
         }
     }
     qtest_quit(a.qts);
+    if (p->t33) {
+        t33_vendor_cbc(p);
+    }
 }
 
 int main(int argc, char **argv)
