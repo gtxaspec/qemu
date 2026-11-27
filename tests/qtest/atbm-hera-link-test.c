@@ -25,6 +25,7 @@
 #include "libqtest.h"
 #include "qemu/bitops.h"
 #include "qemu/bswap.h"
+#include "qobject/qdict.h"
 #include "hw/misc/atbm-hera-link.h"
 
 #define NDS32_VAR       "QTEST_QEMU_BINARY_NDS32"
@@ -64,6 +65,7 @@
 #define H_FN1_BLKSZ     0x148
 #define H_HOST_IRQ      0x14c
 #define HERA_GPIO       0x16800000
+#define HERA_SMU        0x16100000
 #define G_DIN           0x20
 #define G_DIR0          0x28
 #define G_DOUT          0x24
@@ -523,7 +525,7 @@ typedef struct Pair {
     QTestState *chip;
 } Pair;
 
-static Pair pair_start(const char *card_args)
+static Pair pair_start_ext(const char *card_args, const char *chip_extra)
 {
     g_autofree char *link = sock_path("link");
     g_autofree char *uart = sock_path("uart");
@@ -532,7 +534,7 @@ static Pair pair_start(const char *card_args)
         "-chardev socket,id=hl,path=%s,server=on,wait=off "
         "-global atbm-hera-link.chardev=hl "
         "-chardev socket,id=u1,path=%s,server=on,wait=off "
-        "-serial chardev:u1 -serial null", link, uart);
+        "-serial chardev:u1 -serial null %s", link, uart, chip_extra);
     Pair p;
 
     p.chip = qtest_init_ext(NDS32_VAR, chip_args, NULL, true);
@@ -542,6 +544,11 @@ static Pair pair_start(const char *card_args)
                          "-device atbm-hera-link-sdio,id=h,bus=msc0,"
                          "chardev=hl%s", link, uart, card_args);
     return p;
+}
+
+static Pair pair_start(const char *card_args)
+{
+    return pair_start_ext(card_args, "");
 }
 
 static void pair_stop(Pair *p)
@@ -647,6 +654,82 @@ static void test_pair_uart(void)
     pair_stop(&p);
 }
 
+static bool soc_running(QTestState *qts, int want)
+{
+    QDict *r = qtest_qmp(qts, "{'execute': 'query-status'}");
+    bool running = qdict_get_bool(qdict_get_qdict(r, "return"), "running");
+
+    qobject_unref(r);
+    return running == want;
+}
+
+/*
+ * host-power-pad: the chip's pad switches the SoC's supply. Low stops the
+ * SoC, high starts it over from a reset
+ */
+static void test_host_power(void)
+{
+    g_autofree char *sock = sock_path("hpower");
+    FakeChip *c;
+    QTestState *qts = chip_reset_start(&c, sock, ",host-power-pad=25");
+
+    qtest_writeb(qts, SDHCI + SD_POWER, 0x0b);
+    /* another pad does nothing to it */
+    chip_send(c, AHL_PAD, 24, 0, 0, NULL, 0);
+    chip_sync(qts, c);
+    g_assert_true(soc_running(qts, 1));
+    chip_send(c, AHL_PAD, 25, 0, 0, NULL, 0);
+    for (int tries = 0; !soc_running(qts, 0); tries++) {
+        g_assert_cmpint(tries, <, 500);
+        g_usleep(10000);
+    }
+    /* off, its clock stands still */
+    g_assert_cmphex(qtest_readb(qts, SDHCI + SD_POWER), ==, 0x0b);
+    chip_send(c, AHL_PAD, 25, 0, 1, NULL, 0);
+    for (int tries = 0; !soc_running(qts, 1); tries++) {
+        g_assert_cmpint(tries, <, 500);
+        g_usleep(10000);
+    }
+    wait_until(qts, power_is, 0);
+    qtest_quit(qts);
+    fake_chip_stop(c);
+}
+
+/*
+ * A PIR on the chip's pad 24 wakes it from a light sleep (its power
+ * controller's wake id 14), and the pad the chip then drives to wake the
+ * host, 25, reaches the SoC
+ */
+static void test_pair_pir(void)
+{
+    Pair p = pair_start_ext("", "-machine pir-pad=24");
+
+    qtest_irq_intercept_out_named(p.host, "/machine/peripheral/h", "pad-out");
+    qtest_irq_intercept_out_named(p.chip, "/machine/smu", "sleep");
+    sdio_enumerate(p.host);
+
+    /* the SDIO demo's light sleep, with its wake pin 24 high-active */
+    qtest_writel(p.chip, HERA_GPIO + G_DIR0, BIT(25));
+    qtest_writel(p.chip, HERA_SMU + 0x1084, BIT(14));
+    qtest_writel(p.chip, HERA_SMU + 0x10fc, 0x80000002);
+    qtest_writel(p.chip, HERA_SMU + 0x1000, 1);
+    qtest_set_irq_in(p.chip, "/machine/smu", "standby", 0, 1);
+    qtest_set_irq_in(p.chip, "/machine/smu", "standby", 0, 0);
+    g_assert_true(qtest_get_irq(p.chip, 0));
+    qtest_clock_step(p.chip, 100000000);
+    g_assert_true(qtest_get_irq(p.chip, 0));
+
+    qtest_qom_set_bool(p.chip, "/machine", "pir", true);
+    g_assert_false(qtest_get_irq(p.chip, 0));
+    g_assert_cmphex(qtest_readl(p.chip, HERA_SMU + 0x1a0), ==, BIT(14));
+
+    /* the firmware wakes the host */
+    qtest_writel(p.chip, HERA_GPIO + G_DOUT, BIT(25));
+    hif_read(p.host, F_CONFIG);
+    g_assert_true(qtest_get_irq(p.host, 25));
+    pair_stop(&p);
+}
+
 /* The SoC powers the chip off and on, and holds its reset */
 static void test_pair_power(void)
 {
@@ -704,6 +787,7 @@ int main(int argc, char **argv)
     qtest_add_func("atbm-hera-link/chip-reset/soc-reset", test_chip_reset_soc);
     qtest_add_func("atbm-hera-link/chip-reset/card-reset",
                    test_chip_reset_card);
+    qtest_add_func("atbm-hera-link/host-power", test_host_power);
     if (getenv(NDS32_VAR) &&
         qtest_has_machine_with_env(NDS32_VAR, "atbm-hera")) {
         qtest_add_func("atbm-hera-link/pair/sdio", test_pair_sdio);
@@ -711,6 +795,7 @@ int main(int argc, char **argv)
         qtest_add_func("atbm-hera-link/pair/uart", test_pair_uart);
         qtest_add_func("atbm-hera-link/pair/power", test_pair_power);
         qtest_add_func("atbm-hera-link/pair/wdt", test_pair_wdt);
+        qtest_add_func("atbm-hera-link/pair/pir", test_pair_pir);
     }
     ret = g_test_run();
     g_rmdir(link_dir);

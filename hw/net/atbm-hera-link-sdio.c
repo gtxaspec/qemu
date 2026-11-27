@@ -26,6 +26,12 @@
  * a socket does, so that the kernel enumerates it again. The chip's first
  * message after it starts is not acted on in any mode.
  *
+ * "host-power-pad" is a chip pad that switches the SoC's power, as the
+ * SDK's SDIO demo can use its wakeup_host_gpio (pad 25): low stops the SoC
+ * (its vCPUs and clocks, a supply cut), high cold-boots it. The chip drives
+ * it low at its boot until something wakes it (its wake pad 24: "to-chip"
+ * or "pad24"), so with it the camera only runs while the chip wants it.
+ *
  * -device atbm6441 is the model of the chip's behaviour that needs no
  * second QEMU; this card never changes what that one does.
  *
@@ -76,6 +82,8 @@ struct AtbmHeraLinkSdioState {
     char *to_chip;
     char *on_chip_reset;
     int32_t cd_pin;
+    int32_t host_power_pad;
+    bool soc_off;               /* the chip's power pad has the SoC off */
     uint32_t reinsert_ms;
     int chip_reset;             /* CHIP_RESET_* */
     QEMUTimer *reinsert;
@@ -138,6 +146,27 @@ static void hl_card_reinsert(void *opaque)
     sdbus_set_inserted(bus, true);
     qemu_set_irq(s->card_detect, 1);
     sdio_card_set_irq(SDIO_CARD(s), 1, s->chip_irq);
+}
+
+/*
+ * The chip pad that switches the SoC's supply (the SDIO demo's
+ * wakeup_host_gpio, which AN9406 allows to be the host's power switch):
+ * low stops the SoC, as if unpowered (its clocks stop with it), high
+ * cold-boots it
+ */
+static void hl_host_power(AtbmHeraLinkSdioState *s, bool on)
+{
+    if (on == !s->soc_off) {
+        return;
+    }
+    trace_atbm_hera_link_sdio_host_power(on);
+    s->soc_off = !on;
+    if (on) {
+        qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
+        vm_start();
+    } else {
+        vm_stop(RUN_STATE_PAUSED);
+    }
 }
 
 static void hl_chip_reset(AtbmHeraLinkSdioState *s, uint32_t reason)
@@ -203,6 +232,9 @@ static void hl_message(AtbmHeraLinkSdioState *s, const AtbmHeraLinkMsg *m)
     case AHL_PAD:
         if (a < ATBM_HERA_LINK_PADS) {
             qemu_set_irq(s->pad_out[a], !!c);
+        }
+        if ((int)a == s->host_power_pad) {
+            hl_host_power(s, c);
         }
         break;
     default:
@@ -550,6 +582,8 @@ static const Property hl_props[] = {
     DEFINE_PROP_STRING("to-chip", AtbmHeraLinkSdioState, to_chip),
     DEFINE_PROP_STRING("on-chip-reset", AtbmHeraLinkSdioState, on_chip_reset),
     DEFINE_PROP_INT32("cd-pin", AtbmHeraLinkSdioState, cd_pin, -1),
+    DEFINE_PROP_INT32("host-power-pad", AtbmHeraLinkSdioState,
+                      host_power_pad, -1),
     DEFINE_PROP_UINT32("reinsert-ms", AtbmHeraLinkSdioState, reinsert_ms, 200),
 };
 
