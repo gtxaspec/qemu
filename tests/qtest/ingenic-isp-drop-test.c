@@ -26,6 +26,8 @@
 #define T41_FIRST_NS    135000000       /* a T41NQ's first frame */
 #define BUF             0x00400000
 #define T30_MSCALER     0x130b0100      /* its channel 0 */
+#define T32_VIC_CTRL    0x80010         /* VIC 0 runs while bit 0 is set */
+#define T32_DONE_STA    0x30038         /* bit n: channel n's frame done */
 
 typedef struct IspPart {
     const char *machine;
@@ -268,6 +270,43 @@ static void test_busy(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * A T32 Pro channel goes on with done entries unread (its driver with
+ * several sensors never reads them), and keeps each until read: with one
+ * sensor its driver reads one per done interrupt, which can come after the
+ * next frame, and matches it against the buffer it gave. A frame with no
+ * buffer still raises its done bit (the several-sensor driver waits for it).
+ */
+static void test_t32pro_done(void)
+{
+    static const IspPart pro = {
+        .ch_en = 0xf0040, .ch = 0xf0100, .size = 0x04,
+        .y_push = 0x30, .uv_push = 0x50, .y_stride = 0x40, .uv_stride = 0x60,
+        .done_y = 0x38, .done_sta = 0x3c,
+    };
+    QTestState *qts = qtest_init("-machine ingenic-t32 "
+                                 "-global ingenic-t31.soc-variant=t32prozn "
+                                 "-device image-sensor,model=jxq03,bus=i2c0,"
+                                 "fps=25");
+    uint32_t c = chan(&pro, 0);
+
+    qtest_writel(qts, CPM_CLKGR0, 0);
+    qtest_writel(qts, ISP + pro.ch_en, 1);
+    push(qts, &pro, 0);
+    qtest_writel(qts, c + pro.y_push, BUF + 0x4000);
+    qtest_writel(qts, c + pro.uv_push, BUF + 0x5000);
+    qtest_writel(qts, ISP + T32_VIC_CTRL, 1);
+
+    /* two frames into the two buffers, then one with none, none read */
+    qtest_clock_step(qts, 3 * FRAME_NS + IDLE_NS);
+    g_assert_cmphex(qtest_readl(qts, ISP + T32_DONE_STA) & 1, ==, 1);
+    g_assert_cmphex(qtest_readl(qts, c + pro.done_sta), ==, 2 << 8);
+    g_assert_cmphex(qtest_readl(qts, c + pro.done_y), ==, BUF);
+    g_assert_cmphex(qtest_readl(qts, c + pro.done_y), ==, BUF + 0x4000);
+    g_assert_cmphex(qtest_readl(qts, c + pro.done_sta), ==, 1);
+    qtest_quit(qts);
+}
+
 /* The T30's multi-scaler, its own block: the T31's registers */
 static void test_t30_reset(void)
 {
@@ -293,6 +332,7 @@ int main(int argc, char **argv)
     qtest_add_data_func("/ingenic-isp-drop/t40/reset", &t40, test_reset);
     qtest_add_data_func("/ingenic-isp-drop/t41/reset", &t41, test_reset);
     qtest_add_func("/ingenic-isp-drop/t30/reset", test_t30_reset);
+    qtest_add_func("/ingenic-isp-drop/t32pro/done-kept", test_t32pro_done);
     qtest_add_data_func("/ingenic-isp-drop/t23/rule", &t23, test_rule);
     qtest_add_data_func("/ingenic-isp-drop/t31/rule", &t31, test_rule);
     qtest_add_data_func("/ingenic-isp-drop/t40/rule", &t40, test_rule);

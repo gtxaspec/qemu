@@ -1711,7 +1711,8 @@ struct IngenicIspLayout {
     bool ivdc_no_done;              /* an IVDC frame leaves no done entry */
     bool ivdc_serve;                /* its interrupt is served first */
     bool ivdc_no_scale;             /* a scaled channel 0 sends no IVDC frame */
-    bool done_unread;               /* the oldest done entry gives way */
+    bool done_unread;               /* a frame goes on, done entries */
+                                    /* unread; a full FIFO loses one */
     unsigned msca_poly;             /* the MSCA filters a channel of */
                                     /* another size, ISP_POLY_*: see */
                                     /* isp_scale() */
@@ -6994,28 +6995,28 @@ static bool isp_chan_frame(IngenicIspState *s, ImageSensorState *sensor,
     g_autofree uint8_t *nv12 = NULL;
     uint32_t w, h, cx, cy, cw, ch_h;
     uint32_t y, uv, i;
+    bool unread;
 
     if (!isp_chan_geometry(s, p, n, &w, &h, &cx, &cy, &cw, &ch_h)) {
         trace_ingenic_isp_chan_drop(p, n, frame, "no size");
         return false;
     }
     /*
-     * The T32 Pro's driver, with several sensors, sets its channels up
-     * through register lists and never reads their done entries
-     */
-    if (l->done_unread && ch->done_n) {
-        ch->done_rd = (ch->done_rd + 1) % INGENIC_ISP_FIFO;
-        ch->done_n--;
-    }
-    /*
      * A T31 takes the buffers queued as the frame reached the MSCA (a T31X's
      * counter, held with a buffer pushed mid-frame, ran from line 0 at the
-     * next frame): one pushed since waits for the next
+     * next frame): one pushed since waits for the next.
+     *
+     * The T32 Pro's driver, with several sensors, sets its channels up
+     * through register lists and never reads their done entries, so its
+     * channels go on with entries unread. With one sensor it reads them,
+     * one per done interrupt, and matches each against the buffer it gave:
+     * an entry must stay until read (inferred, no T32 Pro to measure).
      */
-    if (!ch->y_n || !ch->uv_n || (ch->done_n && !l->late_done) ||
+    unread = ch->done_n && !l->late_done && !l->done_unread;
+    if (!ch->y_n || !ch->uv_n || unread ||
         (l->push_latch && !p && !n && s->msca_latched[0] &&
          !s->ch0_latched)) {
-        trace_ingenic_isp_chan_drop(p, n, frame, ch->done_n ?
+        trace_ingenic_isp_chan_drop(p, n, frame, unread ?
                                     "the last not read" :
                                     ch->y_n && ch->uv_n ? "buffer too late" :
                                     "no buffer");
@@ -7112,10 +7113,15 @@ static bool isp_chan_frame(IngenicIspState *s, ImageSensorState *sensor,
         ch->late_frame = frame;
         return true;
     }
-    i = (ch->done_rd + ch->done_n++) % INGENIC_ISP_FIFO;
-    ch->done_y[i] = y;
-    ch->done_uv[i] = uv;
-    ch->done_frame[i] = frame;
+    if (l->done_unread && ch->done_n >= ISP_FIFO_PTRS) {
+        /* as the T31's: the frame's entry is lost, its data not */
+        trace_ingenic_isp_chan_drop(p, n, frame, "the done FIFO is full");
+    } else {
+        i = (ch->done_rd + ch->done_n++) % INGENIC_ISP_FIFO;
+        ch->done_y[i] = y;
+        ch->done_uv[i] = uv;
+        ch->done_frame[i] = frame;
+    }
     isp_raise(s, l->pipe[p].done_sta ?: l->pipe[p].int_sta, BIT(n));
     return true;
 }
