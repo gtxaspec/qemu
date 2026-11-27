@@ -14,7 +14,7 @@ apt-get install -y -qq --no-install-recommends \
 
 . /etc/os-release
 echo "== $PRETTY_NAME, $(uname -m), glibc $(ldd --version | sed -n '1s/.* //p')"
-for b in qemu-system-mipsel qemu-system-riscv32; do
+for b in qemu-system-mipsel qemu-system-riscv32 qemu-system-nds32; do
   "/dist/$b" --version >/tmp/v
   echo "$b: $(head -n 1 /tmp/v)"
 done

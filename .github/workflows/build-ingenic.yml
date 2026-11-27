@@ -9,13 +9,14 @@ on:
 
 # Build qemu-system-mipsel (Ingenic T-series) for Linux, Windows, macOS,
 # and qemu-system-riscv32 (the SoCs' RISC-V cores, which share memory with
-# it over a UNIX socket) for all but Windows.
+# it over a UNIX socket, and the ATBM6461) and qemu-system-nds32 (the
+# ATBM6441) for all but Windows.
 # Both Linux jobs run the Ingenic qtests; x86_64 also checks the device pages.
 # ccache is enabled and persisted across runs via actions/cache@v5.
 
 env:
   TARGET: mipsel-softmmu
-  TARGETS: mipsel-softmmu,riscv32-softmmu
+  TARGETS: mipsel-softmmu,riscv32-softmmu,nds32-softmmu
   CCACHE_MAXSIZE: "2G"
 
 jobs:
@@ -77,7 +78,7 @@ jobs:
             --prefix=/usr
 
       - name: Build
-        run: ninja -C build qemu-system-mipsel qemu-system-riscv32 contrib/plugins/libips.so contrib/plugins/libcoherency.so
+        run: ninja -C build qemu-system-mipsel qemu-system-riscv32 qemu-system-nds32 contrib/plugins/libips.so contrib/plugins/libcoherency.so
 
       - name: ccache stats
         run: ccache -s
@@ -85,13 +86,14 @@ jobs:
       - name: Stage artifacts
         run: |
           mkdir -p dist
-          cp build/qemu-system-mipsel build/qemu-system-riscv32 dist/
-          strip dist/qemu-system-mipsel dist/qemu-system-riscv32 || true
+          cp build/qemu-system-mipsel build/qemu-system-riscv32 build/qemu-system-nds32 dist/
+          strip dist/qemu-system-mipsel dist/qemu-system-riscv32 dist/qemu-system-nds32 || true
           cp -r contrib/ingenic dist/
           mkdir -p dist/plugins
           cp build/contrib/plugins/libips.so build/contrib/plugins/libcoherency.so dist/plugins/
           (cd dist && sha256sum qemu-system-mipsel > qemu-system-mipsel.sha256 &&
-           sha256sum qemu-system-riscv32 > qemu-system-riscv32.sha256)
+           sha256sum qemu-system-riscv32 > qemu-system-riscv32.sha256 &&
+           sha256sum qemu-system-nds32 > qemu-system-nds32.sha256)
           ls -la dist/
 
       - uses: actions/upload-artifact@v7
@@ -168,7 +170,7 @@ jobs:
             --prefix=/usr
 
       - name: Build
-        run: ninja -C build qemu-system-mipsel qemu-system-riscv32 contrib/plugins/libips.so contrib/plugins/libcoherency.so
+        run: ninja -C build qemu-system-mipsel qemu-system-riscv32 qemu-system-nds32 contrib/plugins/libips.so contrib/plugins/libcoherency.so
 
       - name: ccache stats
         run: ccache -s
@@ -176,13 +178,14 @@ jobs:
       - name: Stage artifacts
         run: |
           mkdir -p dist
-          cp build/qemu-system-mipsel build/qemu-system-riscv32 dist/
-          strip dist/qemu-system-mipsel dist/qemu-system-riscv32 || true
+          cp build/qemu-system-mipsel build/qemu-system-riscv32 build/qemu-system-nds32 dist/
+          strip dist/qemu-system-mipsel dist/qemu-system-riscv32 dist/qemu-system-nds32 || true
           cp -r contrib/ingenic dist/
           mkdir -p dist/plugins
           cp build/contrib/plugins/libips.so build/contrib/plugins/libcoherency.so dist/plugins/
           (cd dist && sha256sum qemu-system-mipsel > qemu-system-mipsel.sha256 &&
-           sha256sum qemu-system-riscv32 > qemu-system-riscv32.sha256)
+           sha256sum qemu-system-riscv32 > qemu-system-riscv32.sha256 &&
+           sha256sum qemu-system-nds32 > qemu-system-nds32.sha256)
           ls -la dist/
 
       - uses: actions/upload-artifact@v7
@@ -247,7 +250,7 @@ jobs:
             --cc="ccache cc" --cxx="ccache c++"
 
       - name: Build
-        run: ninja -C build qemu-system-mipsel qemu-system-riscv32
+        run: ninja -C build qemu-system-mipsel qemu-system-riscv32 qemu-system-nds32
 
       - name: ccache stats
         run: ccache -s
@@ -255,10 +258,11 @@ jobs:
       - name: Stage artifacts
         run: |
           mkdir -p dist
-          cp build/qemu-system-mipsel build/qemu-system-riscv32 dist/
+          cp build/qemu-system-mipsel build/qemu-system-riscv32 build/qemu-system-nds32 dist/
           cp -r contrib/ingenic dist/
           (cd dist && shasum -a 256 qemu-system-mipsel > qemu-system-mipsel.sha256 &&
-           shasum -a 256 qemu-system-riscv32 > qemu-system-riscv32.sha256)
+           shasum -a 256 qemu-system-riscv32 > qemu-system-riscv32.sha256 &&
+           shasum -a 256 qemu-system-nds32 > qemu-system-nds32.sha256)
           ls -la dist/
 
       - uses: actions/upload-artifact@v7
