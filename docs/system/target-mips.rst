@@ -256,6 +256,18 @@ and ``rd_size=`` added to the command line::
    qemu-system-mipsel -M ingenic-t31 -m 128M -display none \
        -serial null -serial stdio -kernel uImage -initrd rootfs.cpio
 
+When the command line (``-append``, or the default one) already carries
+``rd_start=<addr>``, as a kit loaded over DFU does, the initrd is loaded at
+that address instead and no second ``rd_start`` is added, so the same
+bootargs work under QEMU and after a DFU load. The address must be what the
+kernel accepts: a page aligned KSEG0 or KSEG1 address such as
+``0x81800000``. A missing ``rd_size=`` is added with the file's size; a
+``rd_size=`` that differs from the file's size is kept, as the kernel uses
+it, and a warning is printed. QEMU exits with an error, and never moves the
+initrd, when ``rd_start`` is not such an address, is outside the RAM, when
+the initrd (or ``rd_size``) would end past the ``mem=`` size at 0, or when
+it overlaps the loaded kernel image.
+
 The UARTs send and receive at the line rate the guest programs. With
 ``-global ingenic-uart.line-rate=off``, bytes move at once.
 

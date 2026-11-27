@@ -4,7 +4,8 @@
  * The argv the kernel finds through a1, at the top of the low RAM: the
  * command line from -append, from the flash's U-Boot environment, or
  * thingino's defaults for the part and RAM size; and an -initrd at the top
- * of the kernel's memory with rd_start and rd_size on the command line.
+ * of the kernel's memory with rd_start and rd_size on the command line,
+ * or at the rd_start the command line already carries.
  * The default lines are what thingino's build gives each part. UART1 is
  * left as U-Boot leaves it, through every reset, and the clock gates as a
  * T10L's, T21N's, T23DL's, T31X's, T32LQ's, T40XP's and T41LQ's U-Boot
@@ -208,6 +209,106 @@ static void test_initrd(void)
     unlink(initrd);
 }
 
+static char *make_initrd(size_t size, uint8_t *data)
+{
+    char *path;
+    int fd = g_file_open_tmp("ingenic-boot-initrd-XXXXXX", &path, NULL);
+
+    for (size_t i = 0; i < size; i++) {
+        data[i] = i * 7;
+    }
+    g_assert(write(fd, data, size) == size);
+    close(fd);
+    return path;
+}
+
+/* An rd_start already on the command line: the image goes there */
+static void test_rd_start(void)
+{
+    static const struct {
+        const char *cmdline, *want;
+        uint64_t phys;
+    } cases[] = {
+        { "console=ttyS1 rd_start=0x80800000",
+          "console=ttyS1 rd_start=0x80800000 rd_size=0x19000", 0x800000 },
+        { "rd_start=0xa0800000 rd_size=0x19000 mem=64M@0x0",
+          "rd_start=0xa0800000 rd_size=0x19000 mem=64M@0x0", 0x800000 },
+    };
+    g_autofree uint8_t *data = g_malloc(0x19000);
+    g_autofree uint8_t *back = g_malloc(0x19000);
+    g_autofree char *kernel = make_uimage();
+    g_autofree char *initrd = make_initrd(0x19000, data);
+
+    for (int i = 0; i < ARRAY_SIZE(cases); i++) {
+        QTestState *qts = qtest_initf("-machine ingenic-t31 -m 128 -kernel %s "
+                                      "-initrd %s -append '%s'",
+                                      kernel, initrd, cases[i].cmdline);
+        g_autofree char *got = read_cmdline(qts, 128 * 1024 * 1024);
+
+        g_assert_cmpstr(got, ==, cases[i].want);
+        qtest_memread(qts, cases[i].phys, back, 0x19000);
+        g_assert_cmpmem(back, 0x19000, data, 0x19000);
+        qtest_quit(qts);
+    }
+    unlink(kernel);
+    unlink(initrd);
+}
+
+/* A mismatched rd_size is kept, as the kernel uses it, with a warning */
+static void test_rd_size_differs(void)
+{
+    g_autofree uint8_t *data = g_malloc(0x19000);
+    g_autofree char *kernel = make_uimage();
+    g_autofree char *initrd = make_initrd(0x19000, data);
+    QTestState *qts = qtest_initf("-machine ingenic-t31 -m 128 -kernel %s "
+                                  "-initrd %s -append "
+                                  "'rd_start=0x80800000 rd_size=0x20000'",
+                                  kernel, initrd);
+    g_autofree char *got = read_cmdline(qts, 128 * 1024 * 1024);
+
+    g_assert_cmpstr(got, ==, "rd_start=0x80800000 rd_size=0x20000");
+    qtest_quit(qts);
+    unlink(kernel);
+    unlink(initrd);
+}
+
+/* QEMU must exit 1 with the message on stderr */
+static void rd_start_fails(int ram_mib, const char *cmdline, const char *msg)
+{
+    g_autofree uint8_t *data = g_malloc(0x19000);
+    g_autofree char *kernel = make_uimage();
+    g_autofree char *initrd = make_initrd(0x19000, data);
+    g_autofree char *ram = g_strdup_printf("%d", ram_mib);
+    const char *bin = qtest_qemu_binary(NULL);
+    char *argv[] = { (char *)bin, (char *)"-machine", (char *)"ingenic-t31",
+                     (char *)"-display", (char *)"none", (char *)"-m", ram,
+                     (char *)"-kernel", kernel, (char *)"-initrd", initrd,
+                     (char *)"-append", (char *)cmdline, NULL };
+    g_autofree char *err = NULL;
+    int status = 0;
+
+    g_assert(g_spawn_sync(NULL, argv, NULL, G_SPAWN_STDOUT_TO_DEV_NULL,
+                          NULL, NULL, NULL, &err, &status, NULL));
+    g_assert(WIFEXITED(status));
+    g_assert_cmpint(WEXITSTATUS(status), ==, 1);
+    g_assert_nonnull(strstr(err, msg));
+    unlink(kernel);
+    unlink(initrd);
+}
+
+static void test_rd_start_errors(void)
+{
+    rd_start_fails(64, "mem=64M@0x0 rd_start=0x84000000",
+                   "is outside the RAM, which ends at 0x4000000");
+    rd_start_fails(128, "mem=32M@0x0 rd_start=0x81ff0000",
+                   "does not fit below the end of the kernel's memory at "
+                   "0x2000000");
+    rd_start_fails(128, "rd_start=0x80010000",
+                   "overlaps the kernel at 0x10000 to 0x11000");
+    rd_start_fails(128, "rd_start=0x800000",
+                   "is not a page aligned KSEG0 or KSEG1 address");
+}
+
 static void check_uart1(QTestState *qts)
 {
     const uint32_t uart1 = 0x10031000;
@@ -309,6 +410,11 @@ int main(int argc, char **argv)
     qtest_add_func("ingenic-boot/append", test_append);
     qtest_add_func("ingenic-boot/flash-env", test_flash_env);
     qtest_add_func("ingenic-boot/initrd", test_initrd);
+    qtest_add_func("ingenic-boot/initrd-rd-start", test_rd_start);
+    qtest_add_func("ingenic-boot/initrd-rd-size-differs",
+                   test_rd_size_differs);
+    qtest_add_func("ingenic-boot/initrd-rd-start-errors",
+                   test_rd_start_errors);
     for (int i = 0; i < ARRAY_SIZE(uart_cases); i++) {
         g_autofree char *path = g_strdup_printf("ingenic-boot/uart/%s",
                                                 uart_cases[i].machine);

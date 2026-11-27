@@ -293,7 +293,7 @@ static void ingenic_t31_board_init(MachineState *machine)
         uint64_t entry;
         int64_t size;
         bool is_uimage = false;
-        hwaddr kernel_end = 0;
+        hwaddr kernel_start = 0, kernel_end = 0;
 
         size = load_elf(machine->kernel_filename, NULL,
                         cpu_mips_kseg0_to_phys, NULL,
@@ -307,7 +307,8 @@ static void ingenic_t31_board_init(MachineState *machine)
             if (size > 0) {
                 entry = ep;
                 is_uimage = true;
-                kernel_end = cpu_mips_kseg0_to_phys(NULL, la) + size;
+                kernel_start = cpu_mips_kseg0_to_phys(NULL, la);
+                kernel_end = kernel_start + size;
             }
         }
         if (size == -1) {
@@ -363,7 +364,7 @@ static void ingenic_t31_board_init(MachineState *machine)
             }
             ingenic_boot_linux(machine, cpu,
                                di ? blk_by_legacy_dinfo(di) : NULL, &d,
-                               kernel_end);
+                               kernel_start, kernel_end);
         }
     } else {
         /*

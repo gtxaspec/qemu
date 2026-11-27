@@ -311,9 +311,30 @@ static uint64_t cmdline_mem_top(const char *cmdline, uint64_t fallback)
     return fallback;
 }
 
+/* The value of a "key=" word on the command line, as the kernel reads it */
+static bool cmdline_u64(const char *cmdline, const char *key, uint64_t *val)
+{
+    size_t n = strlen(key);
+
+    for (const char *p = cmdline; (p = strstr(p, key)); p += n) {
+        const char *end;
+
+        if (p != cmdline && p[-1] != ' ') {
+            continue;
+        }
+        if (qemu_strtou64(p + n, &end, 0, val) < 0 ||
+            (*end && *end != ' ')) {
+            error_report("bad %s value on the kernel command line", key);
+            exit(1);
+        }
+        return true;
+    }
+    return false;
+}
+
 void ingenic_boot_linux(MachineState *machine, MIPSCPU *cpu,
                         BlockBackend *flash, const IngenicBootDefaults *d,
-                        hwaddr kernel_end)
+                        hwaddr kernel_start, hwaddr kernel_end)
 {
     uint64_t low = MIN(machine->ram_size, LOW_RAM_MAX);
     hwaddr argv_phys = low - ARGV_AREA;
@@ -335,20 +356,85 @@ void ingenic_boot_linux(MachineState *machine, MIPSCPU *cpu,
     if (machine->initrd_filename) {
         int64_t size = get_image_size(machine->initrd_filename, NULL);
         uint64_t top = MIN(cmdline_mem_top(cmdline, low), argv_phys);
-        hwaddr start = size > 0 && size < top ?
-                       QEMU_ALIGN_DOWN(top - size, 64 * KiB) : 0;
+        uint64_t rd_start = 0, rd_size = 0, span = size;
+        bool has_start = cmdline_u64(cmdline, "rd_start=", &rd_start);
+        bool has_size = cmdline_u64(cmdline, "rd_size=", &rd_size);
+        hwaddr start;
         char *full;
 
-        if (start < kernel_end ||
+        if (size <= 0) {
+            error_report("could not load initrd '%s'",
+                         machine->initrd_filename);
+            exit(1);
+        }
+        if (has_size && rd_size != size) {
+            warn_report("rd_size=0x%" PRIx64 " on the command line differs "
+                        "from the size of initrd '%s' (0x%" PRIx64 "); the "
+                        "kernel will use rd_size", rd_size,
+                        machine->initrd_filename, (uint64_t)size);
+            span = MAX(span, rd_size);
+        }
+
+        if (has_start) {
+            /*
+             * The kernel takes rd_start as a page aligned KSEG0 or KSEG1
+             * address and ignores the initrd otherwise; the image goes
+             * where a DFU load puts it, never elsewhere.
+             */
+            if (rd_start < 0x80000000 || rd_start >= 0xc0000000 ||
+                (rd_start & (4 * KiB - 1))) {
+                error_report("rd_start=0x%" PRIx64 " is not a page aligned "
+                             "KSEG0 or KSEG1 address, the kernel would "
+                             "ignore the initrd", rd_start);
+                exit(1);
+            }
+            start = rd_start & 0x1fffffff;
+            if (start >= machine->ram_size) {
+                error_report("rd_start=0x%" PRIx64 " (physical 0x%" HWADDR_PRIx
+                             ") is outside the RAM, which ends at 0x%"
+                             PRIx64, rd_start, start,
+                             (uint64_t)machine->ram_size);
+                exit(1);
+            }
+            if (span > top || start > top - span) {
+                error_report("initrd at rd_start=0x%" PRIx64 ", 0x%" PRIx64
+                             " bytes, does not fit below the end of the "
+                             "kernel's memory at 0x%" PRIx64,
+                             rd_start, span, top);
+                exit(1);
+            }
+            if (kernel_end && start < kernel_end &&
+                start + span > kernel_start) {
+                error_report("initrd at rd_start=0x%" PRIx64 ", 0x%" PRIx64
+                             " bytes, overlaps the kernel at 0x%" HWADDR_PRIx
+                             " to 0x%" HWADDR_PRIx, rd_start, span,
+                             kernel_start, kernel_end);
+                exit(1);
+            }
+        } else {
+            start = size < top ? QEMU_ALIGN_DOWN(top - size, 64 * KiB) : 0;
+            if (start < kernel_end) {
+                start = 0;
+            }
+        }
+
+        if (!start ||
             load_image_targphys(machine->initrd_filename, start, size,
                                 NULL) != size) {
             error_report("could not load initrd '%s' between the kernel and "
                          "0x%" PRIx64, machine->initrd_filename, top);
             exit(1);
         }
-        full = g_strdup_printf("%s rd_start=0x%08" HWADDR_PRIx
-                               " rd_size=0x%" PRIx64, cmdline,
-                               start | 0x80000000, size);
+        if (has_start && has_size) {
+            full = g_strdup(cmdline);
+        } else if (has_start) {
+            full = g_strdup_printf("%s rd_size=0x%" PRIx64, cmdline,
+                                   (uint64_t)size);
+        } else {
+            full = g_strdup_printf("%s rd_start=0x%08" HWADDR_PRIx
+                                   " rd_size=0x%" PRIx64, cmdline,
+                                   start | 0x80000000, (uint64_t)size);
+        }
         g_free(cmdline);
         cmdline = full;
     }

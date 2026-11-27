@@ -20,7 +20,7 @@ typedef struct {
 
 void ingenic_boot_linux(MachineState *machine, MIPSCPU *cpu,
                         BlockBackend *flash, const IngenicBootDefaults *d,
-                        hwaddr kernel_end);
+                        hwaddr kernel_start, hwaddr kernel_end);
 
 /*
  * The DDR controller's window above @ram_size bytes of RAM at @base, up to
