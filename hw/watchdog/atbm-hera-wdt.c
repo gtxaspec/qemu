@@ -27,6 +27,9 @@
  * Assumption (the SDK gives the enum and "64 = 2 ms" but not the unit
  * counter's role): the stage length is the clocks times the UNIT count.
  * ST[3:2], the IVB register and the reset status only keep what is written.
+ * Properties: "revision", the ID register's low byte, and "ivb", the IVB
+ * register's reset value (a 6461 reads revision 1, and 0x200f at
+ * 0x16600024, 0x1001 at 0x17500024, which its firmware never touches).
  *
  * Copyright (C) 2026 Alfonso Gamboa <gtxent@gmail.com>
  *
@@ -39,6 +42,7 @@
 #include "qemu/timer.h"
 #include "hw/core/sysbus.h"
 #include "hw/core/irq.h"
+#include "hw/core/qdev-properties.h"
 #include "migration/vmstate.h"
 #include "system/watchdog.h"
 #include "trace.h"
@@ -88,6 +92,8 @@ struct AtbmHeraWdtState {
     uint32_t unit;
     uint32_t ivb;
     uint32_t cpurst_st;
+    uint32_t revision;
+    uint32_t ivb_reset;
     bool unlocked;
     int stage;
 };
@@ -176,7 +182,7 @@ static uint64_t wdt_read(void *opaque, hwaddr addr, unsigned size)
 
     switch (addr) {
     case WDT_IDREV:
-        return WDT_ID_VALUE;
+        return WDT_ID_VALUE | (s->revision & 0xff);
     case WDT_CTRL:
         return s->ctrl;
     case WDT_ST:
@@ -270,7 +276,7 @@ static void wdt_reset_hold(Object *obj, ResetType type)
     s->ctrl = 0;
     s->st = 0;
     s->unit = 0;
-    s->ivb = 0;
+    s->ivb = s->ivb_reset;
     s->cpurst_st = 0;
     s->unlocked = false;
     s->stage = STAGE_INT;
@@ -314,11 +320,17 @@ static const VMStateDescription vmstate_wdt = {
     }
 };
 
+static const Property wdt_properties[] = {
+    DEFINE_PROP_UINT32("revision", AtbmHeraWdtState, revision, 0),
+    DEFINE_PROP_UINT32("ivb", AtbmHeraWdtState, ivb_reset, 0),
+};
+
 static void wdt_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
     ResettableClass *rc = RESETTABLE_CLASS(oc);
 
+    device_class_set_props(dc, wdt_properties);
     dc->realize = wdt_realize;
     dc->vmsd = &vmstate_wdt;
     rc->phases.hold = wdt_reset_hold;
