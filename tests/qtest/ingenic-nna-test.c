@@ -964,6 +964,75 @@ static void test_engine_f_slices(void)
 }
 
 /*
+ * 4-bit features in the layout Ingenic's personvehiclepetDet runs its
+ * 4-bit layers in: two planes 4 lines apart (0x37 = 8, 16-byte vectors),
+ * rows a line apart (0x39 = 4), each plane two lines written in turn
+ * (plane 0 at lines 0 and 1, plane 1 at 4 and 5). A 4-bit feature keeps
+ * two 2-bit slices, 0x37 / 4 = 2 lines apart, so the planes do not meet
+ * and a one-tap MAC over both reads back what was written: sums of 3 * a
+ * + 9 * b, as a T41NQ runs the sample's layers. Four slices to a byte
+ * would put plane 0's top slices on plane 1's lines.
+ */
+static void test_engine_f_slices_4bit(void)
+{
+    static const uint16_t regs[][2] = {
+        { 0x28, 2 }, { 0x46, 0 }, { 0x29, 0 }, { 0x2b, 0 }, { 0x3b, 0x31 },
+        { 0x55, 1 }, { 0x44, 3 }, { 0x45, 2 }, { 0x3a, 0 }, { 0x37, 8 },
+        { 0x39, 4 }, { 0x3e, 1 }, { 0x3c, 1 }, { 0x58, 0 },
+        { 0x59, 0x0801 }, { 0x5a, 1 },
+    };
+    static const uint8_t quarter[4] = { 0x00, 0x02, 0x04, 0x07 };
+    static const uint8_t weight[2] = { 3, 9 };
+    static const uint8_t lines[4] = { 0, 1, 4, 5 };
+    g_autofree NnProg *g = g_new0(NnProg, 1);
+    g_autofree uint8_t *out = NULL;
+    uint8_t w[256], ram[6][64] = { 0 };
+
+    add(g, NN_CMD, 0);
+    for (unsigned i = 0; i < ARRAY_SIZE(regs); i++) {
+        add_word(g, NN_RWR, regs[i][0], regs[i][1]);
+    }
+    add(g, NN_CMD, 0x60);
+    add_word(g, NN_RWR, 0x5c, 0);
+    for (unsigned t = 0; t < 2; t++) {
+        for (unsigned k = 0; k < 4; k++) {
+            memset(w, 0, sizeof(w));
+            for (unsigned c = 0; c < 32; c++) {
+                w[c * 8 + c / 4] = (weight[t] >> (2 * k) & 3) << (2 * (c % 4));
+            }
+            for (int q = 0; q < 4; q++) {
+                memcpy(add(g, NN_DWR, quarter[q])->data, &w[64 * q], 64);
+            }
+        }
+    }
+    for (unsigned n = 0; n < ARRAY_SIZE(lines); n++) {
+        unsigned l = lines[n];
+
+        if (n % 2 == 0) {
+            add_word(g, NN_RWR, 0x50, l);
+        }
+        for (unsigned i = 0; i < 64; i++) {
+            ram[l][i] = l * 29 + i * 7 + 3;
+        }
+        memcpy(add(g, NN_DWR, 0x20)->data, ram[l], 64);
+    }
+    add_word(g, NN_RWR, 0x30, 0);
+    add_word(g, NN_MAC, 1, 0);
+    add(g, NN_CMD, 0x83);
+    for (unsigned i = 0; i < 16; i++) {
+        add(g, NN_DRD, i);
+    }
+    out = nn_read_on("ingenic-t41", g, 1024);
+    for (unsigned i = 0; i < 256; i++) {
+        unsigned px = i / 32, ch = i % 32, row = px / 4;
+        unsigned b = px % 4 * 16 + ch / 2, sh = 4 * (ch % 2);
+        int a = ram[row][b] >> sh & 0xf, c = ram[row + 4][b] >> sh & 0xf;
+
+        g_assert_cmpint((int32_t)ldl_le_p(&out[4 * i]), ==, 3 * a + 9 * c);
+    }
+}
+
+/*
  * A T41NQ's W RAM holds 288 entries (72 KiB) and a write past them wraps
  * to entry 0. 73 groups of 4 entries are written in turn: group g puts
  * (g % 100) + 1 on oc 0 and g / 100 + 1 on oc 1 for input channel 0 (8-bit,
@@ -1201,6 +1270,8 @@ int main(int argc, char **argv)
     qtest_add_func("ingenic/nna/engine/t40-1x1", test_engine_t40_1x1);
     qtest_add_func("ingenic/nna/engine/t40-3x3", test_engine_t40_3x3);
     qtest_add_func("ingenic/nna/engine/f-slices", test_engine_f_slices);
+    qtest_add_func("ingenic/nna/engine/f-slices-4bit",
+                   test_engine_f_slices_4bit);
     qtest_add_func("ingenic/nna/engine/w-wrap", test_engine_w_wrap);
     qtest_add_func("ingenic/nna/engine/f-pairs", test_engine_f_pairs);
     qtest_add_func("ingenic/nna/engine/f-line-keeps-program",

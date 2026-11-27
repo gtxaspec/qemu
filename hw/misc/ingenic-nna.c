@@ -42,9 +42,12 @@
  *   NNDWR 0x20/0x21 write F through ports 0 and 1 into 1024 lines of 128
  *     bytes: one slot of a port's WFCW program (T32 words: count, step) per
  *     row of 4 pixels, its line from FR_WADDR (0x50, +0x51 for port 1).
- *     The RAM keeps 2-bit slices: slice k of a line's bytes goes 0x37 / 4
- *     * k lines on, over what was there, and a read sums them back (a
- *     T41NQ's, at plane strides 0x10, 0x20 and 0x40). Writing 0x50 or
+ *     The RAM keeps 2-bit slices, ifbit / 2 to a feature: slice k goes
+ *     0x37 / 4 * k lines on, over what was there, and a read sums them
+ *     back (a T41NQ's for 8-bit data, at plane strides 0x10, 0x20 and
+ *     0x40; for 4-bit data inferred: the sample's 4-bit layers put their
+ *     planes 0x37 / 2 lines apart, which four slices would overwrite and
+ *     two do not, and the chip runs them exactly). Writing 0x50 or
  *     0x51 moves the line only: the program's position carries on. With
  *     bit 0 of 0x5b (venus: stride - 1) the slots go in pairs, on lines L
  *     and L + 1, and the program steps once a pair (a T41NQ's, on loops,
@@ -257,23 +260,37 @@ static void nn_slots(IngenicNnaState *s)
 }
 
 /*
- * The F RAM keeps 2-bit slices: slice k of the byte at offset o goes to the
- * line 0x37 / 4 * k further on, over whatever was there, and a read sums
- * the slices back.
+ * The F RAM keeps 2-bit slices: a feature of ifbit bits is ifbit / 2 of
+ * them, slice k going to the line 0x37 / 4 * k further on, over whatever
+ * was there, and a read gathers the slices back. A byte holds 8 / ifbit
+ * features; its slice k is bits 2k and 2k + 1 of each, packed from bit 0.
+ * That packing is a choice: with 4-bit data alone no read can tell.
  */
+static unsigned nn_fbits(IngenicNnaState *s)
+{
+    unsigned bits = s->t40 ? 8 : nn_ifbit(s);
+
+    return bits == 2 || bits == 4 ? bits : 8;
+}
+
 static void nn_fset(IngenicNnaState *s, uint32_t o, uint8_t v)
 {
     unsigned d = s->reg[0x37] / 4, line = o / NN_LINE % NN_LINES;
+    unsigned bits = nn_fbits(s);
 
-    for (unsigned k = 0; k < 4; k++) {
-        s->fram[((line + k * d) % NN_LINES) * NN_LINE + o % NN_LINE] =
-            v >> (2 * k) & 3;
+    for (unsigned k = 0; k < bits / 2; k++) {
+        uint8_t sl = 0;
+
+        for (unsigned j = 0; j < 8 / bits; j++) {
+            sl |= (v >> (j * bits + 2 * k) & 3) << (2 * j);
+        }
+        s->fram[((line + k * d) % NN_LINES) * NN_LINE + o % NN_LINE] = sl;
     }
 }
 
 static uint8_t nn_fget(IngenicNnaState *s, int64_t o)
 {
-    unsigned d = s->reg[0x37] / 4, line, col;
+    unsigned d = s->reg[0x37] / 4, line, col, bits = nn_fbits(s);
     uint8_t v = 0;
 
     o %= INGENIC_NNA_FRAM;
@@ -282,8 +299,12 @@ static uint8_t nn_fget(IngenicNnaState *s, int64_t o)
     }
     line = o / NN_LINE;
     col = o % NN_LINE;
-    for (unsigned k = 0; k < 4; k++) {
-        v |= s->fram[((line + k * d) % NN_LINES) * NN_LINE + col] << (2 * k);
+    for (unsigned k = 0; k < bits / 2; k++) {
+        uint8_t sl = s->fram[((line + k * d) % NN_LINES) * NN_LINE + col];
+
+        for (unsigned j = 0; j < 8 / bits; j++) {
+            v |= (sl >> (2 * j) & 3) << (j * bits + 2 * k);
+        }
     }
     return v;
 }
