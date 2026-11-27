@@ -196,8 +196,8 @@ static bool pdma_fetch(IngenicPdmaState *s, int n, uint32_t addr)
  * One side of a move: memory runs straight through, a fixed address
  * (SAI/DAI clear, a peripheral FIFO) takes it in port-width accesses.
  */
-static bool pdma_access(uint32_t *addr, bool inc, unsigned port, uint8_t *buf,
-                        uint32_t len, bool write)
+static bool pdma_access(IngenicPdmaState *s, uint32_t *addr, bool inc,
+                        unsigned port, uint8_t *buf, uint32_t len, bool write)
 {
     MemTxResult r = MEMTX_OK;
 
@@ -207,12 +207,29 @@ static bool pdma_access(uint32_t *addr, bool inc, unsigned port, uint8_t *buf,
         *addr += len;
         return r == MEMTX_OK;
     }
+    s->reading = !write;
+    s->read_len = len;
+    s->read_port = port;
     for (uint32_t i = 0; i < len && r == MEMTX_OK; i += port) {
+        s->read_pos = i;
         r = address_space_rw(&address_space_memory, *addr,
                              MEMTXATTRS_UNSPECIFIED, buf + i,
                              MIN(port, len - i), write);
     }
+    s->reading = false;
     return r == MEMTX_OK;
+}
+
+bool ingenic_pdma_burst_pos(IngenicPdmaState *s, uint32_t *pos,
+                            uint32_t *len, uint32_t *port)
+{
+    if (!s->reading) {
+        return false;
+    }
+    *pos = s->read_pos;
+    *len = s->read_len;
+    *port = s->read_port;
+    return true;
 }
 
 static bool pdma_move(IngenicPdmaState *s, int n, uint32_t len)
@@ -221,9 +238,9 @@ static bool pdma_move(IngenicPdmaState *s, int n, uint32_t len)
     uint8_t buf[4096];
 
     assert(len <= sizeof(buf));
-    if (!pdma_access(&c->dsa, c->dcm & DCM_SAI, pdma_port[DCM_SP(c->dcm)],
+    if (!pdma_access(s, &c->dsa, c->dcm & DCM_SAI, pdma_port[DCM_SP(c->dcm)],
                      buf, len, false) ||
-        !pdma_access(&c->dta, c->dcm & DCM_DAI, pdma_port[DCM_DP(c->dcm)],
+        !pdma_access(s, &c->dta, c->dcm & DCM_DAI, pdma_port[DCM_DP(c->dcm)],
                      buf, len, true)) {
         pdma_error(s, n);
         return false;

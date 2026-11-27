@@ -63,7 +63,17 @@ struct IngenicPdmaState {
     uint64_t dack_level;
     bool busy, again;
     bool kicked;                /* the BH has work for the channels */
+    bool reading;               /* a move is reading a fixed address ... */
+    uint32_t read_pos, read_len;    /* ... at this byte of this many, */
+    uint32_t read_port;             /* in accesses of this many bytes */
 };
+
+/*
+ * Where the access now reading a peripheral FIFO falls in its data unit
+ * (the burst): false when no PDMA move is reading, as for the CPU.
+ */
+bool ingenic_pdma_burst_pos(IngenicPdmaState *s, uint32_t *pos,
+                            uint32_t *len, uint32_t *port);
 
 /*
  * Serve the requests raised since the channels last ran, now instead of
