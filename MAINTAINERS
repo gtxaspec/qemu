@@ -1589,9 +1589,6 @@ F: tests/qtest/ingenic-*.c
 AICSemi AIC8800, AltoBeam ATBM60xx, Broadcom BCM4343x, HiSilicon Hi3881 and WS73V100, Huge-IC TXW901U, iComm-semi SSV6006C, MediaTek MT7601U, Realtek RTL8188/RTL8189/RTL8192F/RTL8733B, Seekwave SWT6621S and WuQi WQ9001 Wi-Fi, and the access point and client
 M: Alfonso Gamboa <gtxent@gmail.com>
 S: Maintained
-F: contrib/atbm-hera-lmac/
-F: docs/system/riscv/atbm6461.rst
-F: docs/system/target-nds32.rst
 F: hw/net/aic-*
 F: hw/net/atbm-*
 F: hw/net/bcm-*
@@ -1606,7 +1603,28 @@ F: hw/net/wq9001.c
 F: hw/net/ws73.c
 F: include/hw/net/atbm-*.h
 F: include/hw/net/wifi-*.h
-F: tests/qtest/atbm-hera-lmac-test.c
+
+AltoBeam ATBM6441/6041 and ATBM6461 chips
+M: Alfonso Gamboa <gtxent@gmail.com>
+S: Maintained
+F: configs/devices/nds32-softmmu/
+F: configs/targets/nds32-softmmu.mak
+F: contrib/atbm-hera-lmac/
+F: docs/system/riscv/atbm6461.rst
+F: docs/system/target-nds32.rst
+F: gdbstub/gdb-xml/nds32-core.xml
+F: hw/*/atbm-hera*
+F: hw/nds32/
+F: hw/riscv/atbm-ares.c
+F: include/hw/*/atbm-hera*.h
+F: target/nds32/
+F: target/riscv/tcg/andes_csr.c
+F: target/riscv/tcg/insn_trans/trans_xandesperf.c.inc
+F: target/riscv/xandesperf.decode
+F: tests/functional/riscv32/test_atbm6461.py
+F: tests/qtest/atbm-hera-*
+F: tests/qtest/atbm6461-*
+F: tests/tcg/nds32/
 
 SDIO cards
 M: Alfonso Gamboa <gtxent@gmail.com>
