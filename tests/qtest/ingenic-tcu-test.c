@@ -127,6 +127,38 @@ static void test_case(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * A channel on EXT at /1 counts: the 8-channel T21 and T30 kernels put the
+ * clocksource on channels 6 and 7 that way (TCSR 0x0004, TDFR 0xffff), with
+ * channel 1 on EXT/64 beside it
+ */
+static void test_undivided(void)
+{
+    static const char *const machines[] = { "ingenic-t21", "ingenic-t30" };
+
+    for (int i = 0; i < ARRAY_SIZE(machines); i++) {
+        QTestState *qts = qtest_initf("-machine %s", machines[i]);
+
+        qtest_writel(qts, TCU + TCU_TSSR, 0x3f);
+        for (unsigned n = 6; n < 8; n++) {
+            qtest_writel(qts, TCU + TCU_TCSR(n), 0x0004);
+            qtest_writel(qts, TCU + TCU_TDFR(n), 0xffff);
+            qtest_writel(qts, TCU + TCU_TCNT(n), 0);
+        }
+        qtest_writel(qts, TCU + TCU_TCSR(1), 0x001c);
+        qtest_writel(qts, TCU + TCU_TDFR(1), 0xffff);
+        qtest_writel(qts, TCU + TCU_TCNT(1), 0);
+        qtest_writel(qts, TCU + TCU_TSCR, 0xc2);
+        qtest_writel(qts, TCU + TCU_TESR, 0xc2);
+        g_assert_cmphex(qtest_readl(qts, TCU + TCU_TSR) & 0xff, ==, 0x3d);
+        qtest_clock_step(qts, 100000);
+        g_assert_cmpuint(qtest_readl(qts, TCU + TCU_TCNT(6)), ==, 2400);
+        g_assert_cmpuint(qtest_readl(qts, TCU + TCU_TCNT(7)), ==, 2400);
+        g_assert_cmpuint(qtest_readl(qts, TCU + TCU_TCNT(1)), ==, 37);
+        qtest_quit(qts);
+    }
+}
+
 static void test_ost(void)
 {
     QTestState *qts = qtest_init("-machine ingenic-t31");
@@ -1010,6 +1042,7 @@ int main(int argc, char **argv)
     }
     qtest_add_func("ingenic-tcu/tcsr-gate", test_tcsr_gate);
     qtest_add_func("ingenic-tcu/stop-drops", test_stop_drops);
+    qtest_add_func("ingenic-tcu/undivided", test_undivided);
     qtest_add_func("ingenic-tcu/ost", test_ost);
     qtest_add_func("ingenic-tcu/ost-clocks", test_ost_clocks);
     qtest_add_func("ingenic-tcu/pwm", test_pwm);
