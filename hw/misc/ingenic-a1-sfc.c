@@ -216,6 +216,8 @@ static void ingenic_a1_sfc_fill_fifo(IngenicA1SfcState *s)
         uint32_t faddr = addr + i * 4;
         if (s->fill_const) {
             s->fifo[i] = s->fill_word;
+        } else if (s->sfdp) {
+            s->fifo[i] = ingenic_sfc_nor_sfdp_word(s->flash_size, faddr);
         } else if (s->nand.id) {
             uint32_t off = (s->flash_pos + i) * 4;
 
@@ -542,6 +544,21 @@ static void nor_dma(IngenicA1SfcState *s, bool to_flash)
     s->sr = SR_END;
 }
 
+static void sfdp_dma(IngenicA1SfcState *s)
+{
+    g_autofree uint8_t *buf = g_malloc(s->tran_len ? s->tran_len : 1);
+
+    for (uint32_t i = 0; i < s->tran_len; i += 4) {
+        uint8_t w[4];
+
+        stl_le_p(w, ingenic_sfc_nor_sfdp_word(s->flash_size,
+                                              s->xfer_addr + i));
+        memcpy(buf + i, w, MIN(4u, s->tran_len - i));
+    }
+    sfc_dma(s, s->mem_addr & 0x1FFFFFFF, buf, s->tran_len, true);
+    s->sr = SR_END;
+}
+
 /*
  * What a CDT run leaves in the registers, as a T41NQ reads them after its
  * reads and page programs: each entry's command in TRAN_CONF0's third
@@ -581,6 +598,7 @@ static void ingenic_a1_sfc_do_transfer(IngenicA1SfcState *s)
         s->flash_pos = 0;
         s->words_total = 0;
         s->fill_const = false;
+        s->sfdp = false;
         s->nand_pio_out = false;
         s->nand_resume = -1;
         s->nand_poll = -1;
@@ -669,6 +687,7 @@ static void ingenic_a1_sfc_do_transfer(IngenicA1SfcState *s)
     s->words_total = 0;
     s->sr = 0;
     s->fill_const = false;
+    s->sfdp = false;
     s->discard = false;
 
     if (s->absent) {
@@ -749,9 +768,11 @@ static void ingenic_a1_sfc_do_transfer(IngenicA1SfcState *s)
         break;
 
     case SPI_CMD_READ_SFDP:
-        /* No SFDP table: all ones, like a part without one */
-        s->fill_const = true;
-        s->fill_word = 0xFFFFFFFF;
+        if (nor_dma_mode(s)) {
+            sfdp_dma(s);
+            break;
+        }
+        s->sfdp = true;
         s->words_total = (s->tran_len + 3) / 4;
         ingenic_a1_sfc_fill_fifo(s);
         s->sr = SR_RECE_REQ;
@@ -1200,6 +1221,7 @@ static void ingenic_a1_sfc_reset_hold(Object *obj, ResetType type)
     s->writing = false;
     s->discard = false;
     s->fill_const = false;
+    s->sfdp = false;
     s->fill_word = 0;
     s->sr2 = 0;
     s->sr3 = 0;
@@ -1345,7 +1367,7 @@ static int ingenic_a1_sfc_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_ingenic_a1_sfc = {
     .name = TYPE_INGENIC_A1_SFC,
-    .version_id = 1,
+    .version_id = 2,
     .minimum_version_id = 1,
     .post_load = ingenic_a1_sfc_post_load,
     .fields = (const VMStateField[]) {
@@ -1384,6 +1406,7 @@ static const VMStateDescription vmstate_ingenic_a1_sfc = {
         VMSTATE_BOOL(writing, IngenicA1SfcState),
         VMSTATE_BOOL(discard, IngenicA1SfcState),
         VMSTATE_BOOL(fill_const, IngenicA1SfcState),
+        VMSTATE_BOOL_V(sfdp, IngenicA1SfcState, 2),
         VMSTATE_UINT32(fill_word, IngenicA1SfcState),
         VMSTATE_UINT8(sr2, IngenicA1SfcState),
         VMSTATE_UINT8(sr3, IngenicA1SfcState),

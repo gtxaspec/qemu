@@ -120,6 +120,100 @@ static void test_wrap(const char *machine)
     unlink(img);
 }
 
+/* RDSFDP: the address, then 8 dummy clocks the controller ignores */
+static void read_sfdp(QTestState *qts, uint32_t addr, uint8_t *buf,
+                      unsigned len)
+{
+    qtest_writel(qts, SFC + SFC_SCR, 0x1f);
+    qtest_writel(qts, SFC + SFC_GLB, 0);
+    qtest_writel(qts, SFC + SFC_TRAN_CONF0, 0x5a | TRAN_DATEEN);
+    qtest_writel(qts, SFC + SFC_TRAN_LEN, len);
+    qtest_writel(qts, SFC + SFC_DEV_ADDR0, addr);
+    qtest_writel(qts, SFC + SFC_TRIG, TRIG_START);
+    for (unsigned i = 0; i < len; i += 4) {
+        stl_le_p(buf + i, qtest_readl(qts, SFC + SFC_DR));
+    }
+    g_assert_cmphex(qtest_readl(qts, SFC + SFC_SR) & SR_END, ==, SR_END);
+}
+
+/* What mainline spi-nor parses of it: the sizes, erases, reads, 4 bytes */
+static void check_sfdp(QTestState *qts, uint64_t size)
+{
+    uint8_t t[0x50], again[8];
+    uint32_t bfpt[16], dens;
+    unsigned ptp;
+
+    read_sfdp(qts, 0, t, sizeof(t));
+    g_assert_cmphex((uint32_t)ldl_le_p(t), ==, 0x50444653);       /* "SFDP" */
+    g_assert_cmpuint(t[5], ==, 1);                      /* JESD216 major */
+    g_assert_cmpuint(t[4], >=, 6);                      /* rev B: 16 DWORDs */
+    g_assert_cmpuint(t[6] + 1, ==, 1);                  /* NPH */
+    g_assert_cmpuint(t[8], ==, 0);                      /* BFPT */
+    g_assert_cmpuint(t[11], >=, 16);
+    ptp = ldl_le_p(t + 12) & 0xffffff;
+    g_assert_cmpuint(ptp + 64, <=, sizeof(t));
+    for (int i = 0; i < 16; i++) {
+        bfpt[i] = ldl_le_p(t + ptp + 4 * i);
+    }
+    /* 4 KiB erase opcode 0x20, dual and quad reads, 3 or 4 byte address */
+    g_assert_cmpuint(bfpt[0] & 3, ==, 1);
+    g_assert_cmphex(bfpt[0] >> 8 & 0xff, ==, 0x20);
+    g_assert(bfpt[0] & 1u << 16 && bfpt[0] & 1u << 21 && bfpt[0] & 1u << 22);
+    g_assert_cmpuint(bfpt[0] >> 17 & 3, ==, size > 16 * MiB ? 1 : 0);
+    dens = bfpt[1];
+    g_assert_cmpuint(dens & 0x80000000 ? 1ull << (dens & 0x7fffffff) :
+                     (uint64_t)dens + 1, ==, size * 8);
+    g_assert_cmphex(bfpt[2], ==, 0x6b08eb44);
+    g_assert_cmphex(bfpt[3] & 0xff00ff00, ==, 0xbb003b00);
+    /* erase types: 4 KiB 20h, 32 KiB 52h, 64 KiB D8h */
+    g_assert_cmphex(bfpt[7], ==, 0x520f200c);
+    g_assert_cmphex(bfpt[8] & 0xffff, ==, 0xd810);
+    g_assert_cmpuint(bfpt[10] >> 4 & 15, ==, 8);        /* 256 byte pages */
+    /* B7h and E9h for 4-byte addressing */
+    g_assert(bfpt[15] & 1u << 24 && bfpt[15] & 1u << 14);
+
+    /* an offset reads on from it, and past the table all ones */
+    read_sfdp(qts, 0x10, again, 8);
+    g_assert_cmphex((uint32_t)ldl_le_p(again), ==, bfpt[0]);
+    read_sfdp(qts, 0x60, again, 8);
+    g_assert_cmphex((uint32_t)ldl_le_p(again), ==, 0xffffffff);
+}
+
+static void test_sfdp(const char *machine)
+{
+    for (unsigned mib = 8; mib <= 64; mib *= 2) {
+        g_autofree char *img = NULL;
+        QTestState *qts = start(machine, mib, &img);
+
+        check_sfdp(qts, (uint64_t)mib * MiB);
+        qtest_quit(qts);
+        unlink(img);
+    }
+}
+
+static void t31_sfdp(void)
+{
+    test_sfdp("ingenic-t31");
+}
+
+static void t40_sfdp(void)
+{
+    test_sfdp("ingenic-t40");
+}
+
+static void t41_sfdp(void)
+{
+    test_sfdp("ingenic-t41");
+}
+
+static void a1_sfdp(void)
+{
+    QTestState *qts = qtest_init("-machine ingenic-a1");
+
+    check_sfdp(qts, 16 * MiB);
+    qtest_quit(qts);
+}
+
 static void t31_id(void)
 {
     test_id("ingenic-t31");
@@ -147,5 +241,9 @@ int main(int argc, char **argv)
     qtest_add_func("ingenic/sfc-nor/t31/wrap", t31_wrap);
     qtest_add_func("ingenic/sfc-nor/t40/id", t40_id);
     qtest_add_func("ingenic/sfc-nor/t40/wrap", t40_wrap);
+    qtest_add_func("ingenic/sfc-nor/t31/sfdp", t31_sfdp);
+    qtest_add_func("ingenic/sfc-nor/t40/sfdp", t40_sfdp);
+    qtest_add_func("ingenic/sfc-nor/t41/sfdp", t41_sfdp);
+    qtest_add_func("ingenic/sfc-nor/a1/sfdp", a1_sfdp);
     return g_test_run();
 }

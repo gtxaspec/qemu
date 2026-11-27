@@ -215,7 +215,9 @@ static void ingenic_t31_sfc_fill_fifo(IngenicT31SfcState *s)
 
     for (i = 0; i < chunk; i++) {
         uint32_t faddr = addr + i * 4;
-        if (s->nand.id) {
+        if (s->sfdp) {
+            s->fifo[i] = ingenic_sfc_nor_sfdp_word(s->flash_size, faddr);
+        } else if (s->nand.id) {
             uint32_t off = (s->flash_pos + i) * 4;
 
             s->fifo[i] = off + 4 <= sizeof(s->nand_buf) ?
@@ -600,6 +602,7 @@ static void ingenic_t31_sfc_do_transfer(IngenicT31SfcState *s)
     s->flash_pos = 0;
     s->words_total = 0;
     s->sr = 0;
+    s->sfdp = false;
 
     if ((s->glb & GLB_CDT_EN) && cdt_xfer) {
         sfc_cdt_show(s, cdt_index);
@@ -726,19 +729,20 @@ static void ingenic_t31_sfc_exec_cmd(IngenicT31SfcState *s, uint32_t cmd)
         break;
 
     case SPI_CMD_READ_SFDP:
-        /* No SFDP table: answer all-ones like an unsupported part */
-        s->words_total = (s->tran_len + 3) / 4;
-        for (uint32_t i = 0; i < s->words_total &&
-             i < INGENIC_T31_SFC_FIFO_DEPTH; i++) {
-            s->fifo[i] = 0xFFFFFFFF;
-        }
-        s->fifo_len = s->words_total < INGENIC_T31_SFC_FIFO_DEPTH ?
-                      s->words_total : INGENIC_T31_SFC_FIFO_DEPTH;
-        s->fifo_pos = 0;
         if (dma) {
-            ingenic_t31_sfc_dma_out(s, s->fifo, s->tran_len);
+            g_autofree uint32_t *w = g_new0(uint32_t,
+                                            DIV_ROUND_UP(s->tran_len, 4));
+
+            for (uint32_t i = 0; i < DIV_ROUND_UP(s->tran_len, 4); i++) {
+                w[i] = ingenic_sfc_nor_sfdp_word(s->flash_size,
+                                                 s->xfer_addr + 4 * i);
+            }
+            ingenic_t31_sfc_dma_out(s, w, s->tran_len);
             break;
         }
+        s->sfdp = true;
+        s->words_total = (s->tran_len + 3) / 4;
+        ingenic_t31_sfc_fill_fifo(s);
         s->sr = SR_RECE_REQ;
         break;
 
@@ -1299,7 +1303,7 @@ static int ingenic_t31_sfc_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_ingenic_t31_sfc = {
     .name = TYPE_INGENIC_T31_SFC,
-    .version_id = 1,
+    .version_id = 2,
     .minimum_version_id = 1,
     .post_load = ingenic_t31_sfc_post_load,
     .fields = (const VMStateField[]) {
@@ -1335,6 +1339,7 @@ static const VMStateDescription vmstate_ingenic_t31_sfc = {
         VMSTATE_UINT32(words_total, IngenicT31SfcState),
         VMSTATE_BOOL(write_enabled, IngenicT31SfcState),
         VMSTATE_BOOL(writing, IngenicT31SfcState),
+        VMSTATE_BOOL_V(sfdp, IngenicT31SfcState, 2),
         VMSTATE_UINT32(status_cmd, IngenicT31SfcState),
         VMSTATE_UINT32(xfer_addr, IngenicT31SfcState),
         VMSTATE_UINT8(sr2, IngenicT31SfcState),

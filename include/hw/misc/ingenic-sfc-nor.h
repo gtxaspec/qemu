@@ -10,6 +10,8 @@
 #define HW_MISC_INGENIC_SFC_NOR_H
 
 #include "qemu/units.h"
+#include "qemu/bswap.h"
+#include "qemu/host-utils.h"
 
 /*
  * An image of exactly 8 MiB is an 8 MiB part. Otherwise the smallest
@@ -102,6 +104,67 @@ static inline uint32_t ingenic_sfc_nor_rdid(uint32_t flash_size,
     }
     return ((jedec_id >> 16) & 0xFF) | (jedec_id & 0xFF00) |
            ((jedec_id & 0xFF) << 16);
+}
+
+#define INGENIC_SFC_NOR_SFDP_SIZE   0x50
+
+/*
+ * The part's SFDP (RDSFDP, 0x5A) as JESD216B lays it out: the header, one
+ * parameter header and the 16-DWORD basic flash parameter table at 0x10,
+ * everything else reading 0xFF. The table says what the model does:
+ * 4 KiB, 32 KiB and 64 KiB erase, 256 byte pages, dual and quad output and
+ * I/O reads, no DTR, no quad-enable bit to set, B7h/E9h for 4-byte
+ * addressing above 16 MiB, 66h+99h to reset, and the capacity of the part.
+ */
+static inline void ingenic_sfc_nor_sfdp(uint32_t flash_size, uint8_t *t)
+{
+    uint64_t bits = (uint64_t)flash_size * 8;
+    uint32_t bfpt[16] = {
+        /* 4 KiB erase 0x20, 1-1-2 1-2-2 1-4-4 1-1-4 reads, 3 or 4 bytes */
+        0xff0020e5 | (flash_size > 16 * MiB ? 0xf30000 : 0xf10000),
+        /* density: bits - 1, or 2^N with bit 31 from 2 Gbit up */
+        bits > 2ULL << 30 ? 0x80000000u | ctz64(bits) : bits - 1,
+        0x6b08eb44,         /* 1-4-4: 4 waits, 2 mode, EB; 1-1-4: 8, 6B */
+        0xbb803b08,         /* 1-1-2: 8 waits, 3B; 1-2-2: 4 mode, BB */
+        0xffffffee,         /* no 2-2-2 or 4-4-4 */
+        0xffff0000, 0xffff0000,
+        0x520f200c,         /* erase 1: 4 KiB 20h, 2: 32 KiB 52h */
+        0xff00d810,         /* erase 3: 64 KiB D8h, 4: none */
+        0x00a20220,         /* typical erase times */
+        0x6000ea80,         /* 256 byte page, program and chip erase times */
+        0xffffffff, 0xffffffff, /* no suspend and resume */
+        0xfffffffb,         /* poll the status register's busy bit */
+        0xff8fffff,         /* no quad enable bit, no 4-4-4 sequences */
+        0x01005000,         /* 4-byte mode by B7h/E9h, reset by 66h+99h */
+    };
+
+    memset(t, 0xff, INGENIC_SFC_NOR_SFDP_SIZE);
+    stl_le_p(t, 0x50444653);    /* "SFDP" */
+    t[4] = 6;                   /* minor */
+    t[5] = 1;                   /* major */
+    t[6] = 0;                   /* one parameter header */
+    t[8] = 0x00;                /* basic flash parameter table */
+    t[9] = 6;
+    t[10] = 1;
+    t[11] = 16;                 /* DWORDs */
+    stl_le_p(t + 12, 0xff000010);   /* at 0x10 */
+    for (int i = 0; i < 16; i++) {
+        stl_le_p(t + 0x10 + 4 * i, bfpt[i]);
+    }
+}
+
+/* The little-endian word at addr of the SFDP, 0xFF beyond its table */
+static inline uint32_t ingenic_sfc_nor_sfdp_word(uint32_t flash_size,
+                                                 uint32_t addr)
+{
+    uint8_t t[INGENIC_SFC_NOR_SFDP_SIZE];
+    uint32_t v = 0;
+
+    ingenic_sfc_nor_sfdp(flash_size, t);
+    for (int i = 3; i >= 0; i--) {
+        v = (v << 8) | (addr + i < sizeof(t) ? t[addr + i] : 0xff);
+    }
+    return v;
 }
 
 #endif

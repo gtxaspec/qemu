@@ -74,6 +74,7 @@ struct IngenicA1SfcState {
     bool writing;
     bool discard;           /* the data phase goes nowhere */
     bool fill_const;        /* the FIFO fills with fill_word, not flash */
+    bool sfdp;              /* the FIFO fills from the SFDP table */
     uint32_t fill_word;
 
     /* Flash status registers 2 and 3; the WRSR burst in progress */

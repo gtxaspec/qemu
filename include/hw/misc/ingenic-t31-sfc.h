@@ -62,6 +62,7 @@ struct IngenicT31SfcState {
     uint32_t words_total;
     bool write_enabled;
     bool writing;
+    bool sfdp;              /* the FIFO fills from the SFDP table */
     uint32_t status_cmd;    /* WRSR/WRSR2/WRSR3 burst awaiting data */
     uint32_t xfer_addr;     /* flash address of the phase being executed */
     uint8_t sr2;            /* status register 2 (QE) */
