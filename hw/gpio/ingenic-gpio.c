@@ -121,7 +121,7 @@ typedef struct IngenicGpioPwmPad {
 #define PD(n) (96 + (n))
 
 /*
- * The pads each part's PWM channels come out on. T10, T20, T21 and T30:
+ * The pads each part's PWM channels come out on. T10 and T20:
  * the vendor 3.10 kernels' PWM_PORTB_BIT17, BIT18, PORTC_BIT8 and BIT9
  * (function 0). T23, T31: the FUNC0-3 columns of the vendors' pinout and
  * GPIO tables (the T31's lists PB17, PB18, PB27 and PB28 as the QFN's
@@ -132,6 +132,26 @@ typedef struct IngenicGpioPwmPad {
  */
 static const IngenicGpioPwmPad ingenic_gpio_pwm_legacy[] = {
     { PB(17), 0, 0 }, { PB(18), 0, 1 }, { PC(8), 0, 2 }, { PC(9), 0, 3 },
+    { 0xff }
+};
+/*
+ * The T21 and T30 take all 8 timer unit channels onto the PC pads too
+ * (their datasheets' function lines, vendor kernels' pwm_gpio tables,
+ * T21-1.0.33 soc-t21/common/platform.c:907 and T30-1.0.5 soc-t30/common/
+ * platform.c:873); PC8 and PC9 stay from the vendor PWM_PORTC_BIT macros,
+ * which the T21 datasheet does not list: unconfirmed on silicon.
+ */
+static const IngenicGpioPwmPad ingenic_gpio_pwm_t21[] = {
+    { PB(17), 0, 0 }, { PB(18), 0, 1 }, { PC(8), 0, 2 }, { PC(9), 0, 3 },
+    { PC(17), 0, 0 }, { PC(18), 0, 1 },
+    { PC(11), 1, 2 }, { PC(12), 1, 3 }, { PC(13), 1, 4 }, { PC(14), 1, 5 },
+    { PC(15), 0, 6 }, { PC(16), 1, 7 }, { 0xff }
+};
+static const IngenicGpioPwmPad ingenic_gpio_pwm_t30[] = {
+    { PB(17), 0, 0 }, { PB(18), 0, 1 }, { PC(8), 0, 2 }, { PC(9), 0, 3 },
+    { PC(11), 1, 0 }, { PC(12), 1, 1 }, { PC(13), 1, 2 }, { PC(14), 1, 3 },
+    { PC(15), 1, 4 }, { PC(16), 1, 5 }, { PC(17), 1, 6 }, { PC(18), 1, 7 },
+    { PC(25), 0, 4 }, { PC(26), 0, 5 }, { PC(27), 0, 6 }, { PC(28), 0, 7 },
     { 0xff }
 };
 static const IngenicGpioPwmPad ingenic_gpio_pwm_t31[] = {
@@ -326,7 +346,7 @@ static const IngenicGpioFamily ingenic_gpio_families[] = {
      */
     { "t21", { 0x070, 0x080, 0x090, 0x0a0, 0x100, 0x110, 0x120, 0x130,
                0x140, 0x150, 0x160, 0x180 }, ingenic_gpio_reset_t21,
-      .absent = 0x060, .pwm = ingenic_gpio_pwm_legacy },
+      .absent = 0x060, .pwm = ingenic_gpio_pwm_t21 },
     /* power domain, pulls, drive strength low and high, slew, Schmitt */
     { "t23", { 0x100, 0x110, 0x120, 0x130, 0x140, 0x150, 0x160 },
       ingenic_gpio_reset_t23, .pwm = ingenic_gpio_pwm_t23 },
@@ -336,7 +356,7 @@ static const IngenicGpioFamily ingenic_gpio_families[] = {
      */
     { "t30", { 0x100, 0x110, 0x120, 0x130, 0x140, 0x150, 0x160, 0x180 },
       ingenic_gpio_reset_t30, ingenic_gpio_pins_t30, ingenic_gpio_bits_t30,
-      0x060, ingenic_gpio_pinread_t30, ingenic_gpio_pwm_legacy },
+      0x060, ingenic_gpio_pinread_t30, ingenic_gpio_pwm_t30 },
     { "t31", { 0x100, 0x110, 0x120, 0x130, 0x140, 0x150, 0x160 },
       ingenic_gpio_reset_t31, .pwm = ingenic_gpio_pwm_t31 },
     /*

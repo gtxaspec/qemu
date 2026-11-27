@@ -75,6 +75,14 @@ typedef struct {
 static const Pad legacy_pads[] = {
     { PB(17), 0, 0 }, { PB(18), 0, 1 }, { PC(8), 0, 2 }, { PC(9), 0, 3 },
 };
+static const Pad t21_pads[] = {
+    { PB(17), 0, 0 }, { PC(8), 0, 2 }, { PC(17), 0, 0 }, { PC(18), 0, 1 },
+    { PC(11), 1, 2 }, { PC(14), 1, 5 }, { PC(15), 0, 6 }, { PC(16), 1, 7 },
+};
+static const Pad t30_pads[] = {
+    { PB(18), 0, 1 }, { PC(9), 0, 3 }, { PC(11), 1, 0 }, { PC(18), 1, 7 },
+    { PC(25), 0, 4 }, { PC(28), 0, 7 },
+};
 static const Pad t31_pads[] = {
     { PA(14), 2, 0 }, { PA(22), 2, 1 }, { PB(17), 0, 0 }, { PB(27), 1, 2 },
     { PB(28), 1, 3 }, { PC(17), 0, 0 }, { PC(20), 0, 3 },
@@ -106,8 +114,8 @@ static const Pad a1_pads[] = {
 static const Case cases[] = {
     { "ingenic-t10", "", legacy_pads, ARRAY_SIZE(legacy_pads), 0x100 },
     { "ingenic-t20", "", legacy_pads, ARRAY_SIZE(legacy_pads), 0x100 },
-    { "ingenic-t21", "", legacy_pads, ARRAY_SIZE(legacy_pads) },
-    { "ingenic-t30", "", legacy_pads, ARRAY_SIZE(legacy_pads) },
+    { "ingenic-t21", "", t21_pads, ARRAY_SIZE(t21_pads) },
+    { "ingenic-t30", "", t30_pads, ARRAY_SIZE(t30_pads) },
     { "ingenic-t23", "", t23_pads, ARRAY_SIZE(t23_pads) },
     { "ingenic-t31", "", t31_pads, ARRAY_SIZE(t31_pads) },
     { "ingenic-t40", "", t40_pads, ARRAY_SIZE(t40_pads) },
