@@ -16,6 +16,7 @@
 #include "exec/helper-proto.h"
 #include "qemu/plugin.h"
 #include "qemu/main-loop.h"
+#include "hw/core/irq.h"
 
 const char *nds32_excp_name(int excp)
 {
@@ -311,7 +312,17 @@ uint32_t HELPER(pbsad)(uint32_t a, uint32_t b)
 G_NORETURN void HELPER(standby)(CPUNDS32State *env)
 {
     CPUState *cs = env_cpu(env);
+#ifndef CONFIG_USER_ONLY
+    bool locked = bql_locked();
 
+    if (!locked) {
+        bql_lock();
+    }
+    qemu_irq_pulse(env_archcpu(env)->standby);
+    if (!locked) {
+        bql_unlock();
+    }
+#endif
     cs->halted = 1;
     cs->exception_index = EXCP_HLT;
     cpu_loop_exit(cs);

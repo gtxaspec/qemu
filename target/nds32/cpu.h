@@ -83,6 +83,12 @@ enum {
 #define IVB_PPL        (1u << 0)
 #define IVB_NIVIC_MASK (7u << 1)
 #define IVB_EVIC       (1u << 13)
+/*
+ * IVIC_VER, read-only: 1 is the controller with $INT_MASK2/$INT_PRI2,
+ * which this core's interrupt enables are in; firmware tests bit 11 to
+ * know whether to save and restore them (CPU_RETENTION_FUNC)
+ */
+#define IVB_IVIC_VER1  (1u << 11)
 #define IVB_ESZ_SHIFT  14
 #define IVB_BASE_MASK  0xffff0000u
 #define IVB_WMASK      (IVB_BASE_MASK | (3u << IVB_ESZ_SHIFT) | IVB_EVIC | \
@@ -175,6 +181,12 @@ struct ArchCPU {
 
     uint32_t cpu_ver;
     uint32_t swi_vector;
+#ifndef CONFIG_USER_ONLY
+    /* pulsed as the core enters standby: what a power controller watches */
+    qemu_irq standby;
+    /* the power controller keeps the core in standby, whatever is pending */
+    bool power_hold;
+#endif
 };
 
 #define CPU_RESOLVING_TYPE TYPE_NDS32_CPU

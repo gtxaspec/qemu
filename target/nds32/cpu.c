@@ -52,8 +52,12 @@ static void nds32_restore_state_to_opc(CPUState *cs,
 #ifndef CONFIG_USER_ONLY
 static bool nds32_cpu_has_work(CPUState *cs)
 {
-    /* standby wakes on any enabled pending interrupt, with or without GIE */
-    return cpu_test_interrupt(cs, CPU_INTERRUPT_HARD);
+    /*
+     * standby wakes on any enabled pending interrupt, with or without GIE,
+     * unless the power controller holds the core there
+     */
+    return !NDS32_CPU(cs)->power_hold &&
+           cpu_test_interrupt(cs, CPU_INTERRUPT_HARD);
 }
 #endif
 
@@ -89,6 +93,7 @@ static void nds32_cpu_reset_hold(Object *obj, ResetType type)
     env->sr[SR_DCM_CFG] = (1u << 10);       /* one DLM bank */
     env->sr[SR_MSC_CFG] = (1u << 5) | (1u << 6) | (1u << 10) | (1u << 12);
     env->sr[SR_PSW] = PSW_POM_SU;
+    env->sr[SR_IVB] = IVB_IVIC_VER1;
 
     cs->exception_index = -1;
     nds32_update_irq(env);
@@ -131,11 +136,28 @@ static void nds32_cpu_realizefn(DeviceState *dev, Error **errp)
     ncc->parent_realize(dev, errp);
 }
 
+#ifndef CONFIG_USER_ONLY
+/* Input "power-hold": while high a core in standby stays there */
+static void nds32_cpu_set_power_hold(void *opaque, int n, int level)
+{
+    NDS32CPU *cpu = opaque;
+
+    cpu->power_hold = level;
+    if (!level) {
+        qemu_cpu_kick(CPU(cpu));
+    }
+}
+#endif
+
 static void nds32_cpu_initfn(Object *obj)
 {
 #ifndef CONFIG_USER_ONLY
     qdev_init_gpio_in_named(DEVICE(obj), nds32_cpu_set_irq, "IRQ",
                             NDS32_NUM_IRQS);
+    qdev_init_gpio_out_named(DEVICE(obj), &NDS32_CPU(obj)->standby,
+                             "standby", 1);
+    qdev_init_gpio_in_named(DEVICE(obj), nds32_cpu_set_power_hold,
+                            "power-hold", 1);
 #endif
 }
 
