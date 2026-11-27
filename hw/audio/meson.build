@@ -9,6 +9,7 @@ system_ss.add(when: 'CONFIG_GUS', if_true: files('gus.c', 'gusemu_hal.c', 'gusem
 system_ss.add(when: 'CONFIG_HDA', if_true: files('intel-hda.c', 'hda-codec.c'))
 system_ss.add(when: 'CONFIG_INGENIC_MIC', if_true: files('ingenic-mic.c'))
 system_ss.add(when: 'CONFIG_INGENIC_AIC', if_true: files('ingenic-aic.c'))
+system_ss.add(when: 'CONFIG_AW87559', if_true: files('aw87559.c'))
 system_ss.add(when: 'CONFIG_INGENIC_DMIC', if_true: files('ingenic-dmic.c',
                                                           'ingenic-as-dmic.c'))
 system_ss.add(when: 'CONFIG_PCSPK', if_true: files('pcspk.c'))

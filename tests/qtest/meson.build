@@ -219,6 +219,7 @@ qtests_mipsel = qtests_mips + \
     'ingenic-aes-test', 'ingenic-des-test', 'ingenic-rdhwr-test',
     'ingenic-mxu2-test', 'ingenic-mxu3-test',
     'ingenic-pdma-test',
+    'ingenic-aw87559-test',
     'ingenic-aic-burst-test',
     'ingenic-hash-test', 'ingenic-rsa-test',
     'ingenic-dtrng-test', 'ingenic-gpio-i2c-test', 'ingenic-gpio-stepper-test', 'ingenic-i2c-periph-test', 'ingenic-motor-chips-test',

@@ -62,3 +62,8 @@ config INGENIC_AIC
 config INGENIC_DMIC
     bool
     select INGENIC_MIC
+
+config AW87559
+    bool
+    depends on I2C
+    default y if I2C_DEVICES

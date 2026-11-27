@@ -1659,6 +1659,13 @@ on I2C1's pads (PC19, PC20), and sets its first exposure from it. Give it
 one with `-device opt3001,bus=i2c1,lux=500` (at 0x44; `qom-set` changes
 `lux` while it runs); without it the core sees 0 lux.
 
+The Wyze Cam v3 Pro's speaker amplifier, an Awinic AW87559 (ID 0x5a, the
+aw87xxx driver's pid_5a class), attaches with
+`-device aw87559,bus=i2c3` at 0x58. Its reset pin (`reset-pin`, SoC GPIO
+63 = PB31 by default, -1 for none) holds it in reset while low: the address
+does not ACK and the registers return to their reset values, until the
+driver raises the pin. The registers keep what the driver's profile writes.
+
 Two more I2C parts the stock eufy T40 firmwares look for (both attach with
 `-device NAME,bus=i2cN`; `qom-set` moves their readings while they run):
 the T86P2's TI TMAG5273 Hall sensor on i2c3 at 0x35 (`tmag5273`: `x`, `y`,
