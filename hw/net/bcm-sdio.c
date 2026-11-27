@@ -1,12 +1,12 @@
 /*
- * Broadcom BCM43438 and BCM43436 Wi-Fi on SDIO
+ * Broadcom BCM43438, BCM43436 and BCM43362 Wi-Fi on SDIO
  *
  * Function 1 reaches the chip's backplane through a 32 KiB window, and
  * with address bit 16 a few registers of the SDIO core's own; function 2
  * is the packet FIFO, which carries SDPCM frames each way. The dongle
- * firmware behind them is bcm-wifi.c. The chip asks for service on a pin
- * of its own, the host-wake GPIO, and WL_REG_ON, a GPIO the other way,
- * powers it.
+ * firmware behind them is bcm-wifi.c. The chip asks for service on the
+ * SDIO card interrupt, or, once the host sets CCCR 0xf2, on a pin of its
+ * own, the host-wake GPIO; WL_REG_ON, a GPIO the other way, powers it.
  *
  * Copyright (C) 2026 Alfonso Gamboa <gtxent@gmail.com>
  *
@@ -97,8 +97,6 @@ OBJECT_DECLARE_TYPE(BcmSdioState, BcmSdioClass, BCM_SDIO)
 /* SOCRAM: 8 banks of 64 KiB */
 #define SOCRAM_COREINFO         0x00
 #define SOCRAM_BANKINFO         0x40
-#define SOCRAM_NBANKS           8
-#define SOCRAM_BANK_64K         7
 
 #define WRAP_IOCTRL             0x408
 #define WRAP_RESETCTRL          0x800
@@ -109,7 +107,7 @@ OBJECT_DECLARE_TYPE(BcmSdioState, BcmSdioClass, BCM_SDIO)
  * The last word of RAM: the NVRAM's length token on the way in, the
  * address of the firmware's sdpcm_shared_t once it is up
  */
-#define RAM_LAST_WORD           (RAM_SIZE - 4)
+#define RAM_LAST_WORD(s)        ((s)->ram_size - 4)
 #define SDPCM_SHARED_LEN        32
 #define SDPCM_SHARED_VERSION    1
 
@@ -128,6 +126,9 @@ typedef struct BcmSdioChip {
     const char *name;
     const char *desc;
     uint32_t chipid;
+    uint16_t device;        /* the SDIO device ID, the chip number */
+    uint8_t ram_banks;
+    uint8_t bank_code;      /* SOCRAM bankinfo: the bank's size - 1, in 8 KiB */
 } BcmSdioChip;
 
 struct BcmSdioClass {
@@ -151,6 +152,7 @@ struct BcmSdioState {
     uint32_t regs[NCORES][CORE_REGS];
     uint32_t wrap[NCORES][CORE_REGS];
     uint8_t *ram;
+    uint32_t ram_size;
     bool fw_up;
 
     /* F2: the frame the host is writing, the one it is reading */
@@ -178,10 +180,17 @@ static const uint32_t bcm_erom[] = {
     0x0000000f,
 };
 
-/* A1 and B0: chip 43430, 5 cores, package 4, revision 1 or 2 */
+/*
+ * A1 and B0: chip 43430, 5 cores, package 4, revision 1 or 2; 8 banks of
+ * 64 KiB. The BCM43362, the AP6181's chip: device ID and chip number
+ * 0xa962, revision 1 (what the board's firmware reports); the 240 KiB of
+ * RAM in 15 banks of 16 KiB, the package and the core list (that of the
+ * others here) are inferred, not measured.
+ */
 static const BcmSdioChip bcm_sdio_chips[] = {
-    { "bcm43438", "Broadcom BCM43438 SDIO Wi-Fi", 0x1541a9a6 },
-    { "bcm43436", "Broadcom BCM43436 SDIO Wi-Fi", 0x1542a9a6 },
+    { "bcm43438", "Broadcom BCM43438 SDIO Wi-Fi", 0x1541a9a6, 0xa9a6, 8, 7 },
+    { "bcm43436", "Broadcom BCM43436 SDIO Wi-Fi", 0x1542a9a6, 0xa9a6, 8, 7 },
+    { "bcm43362", "Broadcom BCM43362 SDIO Wi-Fi", 0x1501a962, 0xa962, 15, 1 },
 };
 
 static uint32_t *bcm_sdiod(BcmSdioState *s, uint32_t reg)
@@ -189,19 +198,26 @@ static uint32_t *bcm_sdiod(BcmSdioState *s, uint32_t reg)
     return &s->regs[CORE_SDIOD][reg / 4];
 }
 
-/* The host-wake pin: driven once enabled, at the level CCCR 0xf2 asks */
+/*
+ * The chip asks for service while an interrupt it is told to pass is
+ * pending: on the card interrupt of function 1, which the SDIO bus carries
+ * until the host clears what is pending, or, once CCCR 0xf2 redirects and
+ * enables it, on the host-wake pin at the level that register asks.
+ */
 static void bcm_sdio_wake(BcmSdioState *s)
 {
     uint8_t sepint = s->vendor_cccr[CCCR_SEPINT & 0xf];
     bool pending = *bcm_sdiod(s, SDIOD_INTSTATUS) &
                    *bcm_sdiod(s, SDIOD_HOSTINTMASK);
+    bool oob = (sepint & SEPINT_MASK) && (sepint & SEPINT_OE);
     bool level = false;
 
-    if ((sepint & SEPINT_MASK) && (sepint & SEPINT_OE)) {
+    if (oob) {
         level = (sepint & SEPINT_ACT_HI) ? pending : !pending;
     }
     trace_bcm_sdio_wake(level);
     qemu_set_irq(s->host_wake, level);
+    sdio_card_set_irq(SDIO_CARD(s), 1, !oob && pending);
 }
 
 static void bcm_sdio_raise(BcmSdioState *s, uint32_t bits)
@@ -238,20 +254,20 @@ static void bcm_sdio_halt(BcmSdioState *s)
  */
 static void bcm_sdio_boot(BcmSdioState *s)
 {
-    uint32_t token = ldl_le_p(s->ram + RAM_LAST_WORD);
-    uint32_t nvram = RAM_LAST_WORD;
+    uint32_t token = ldl_le_p(s->ram + RAM_LAST_WORD(s));
+    uint32_t nvram = RAM_LAST_WORD(s);
     uint32_t shared;
 
     if (!ldl_le_p(s->ram + 4)) {
         return;
     }
     if (((~token >> 16) & 0xffff) == (token & 0xffff)) {
-        nvram -= MIN((token & 0xffff) * 4, RAM_LAST_WORD / 2);
+        nvram -= MIN((token & 0xffff) * 4, RAM_LAST_WORD(s) / 2);
     }
     shared = (nvram - SDPCM_SHARED_LEN) & ~3;
     memset(s->ram + shared, 0, SDPCM_SHARED_LEN);
     stl_le_p(s->ram + shared, SDPCM_SHARED_VERSION);
-    stl_le_p(s->ram + RAM_LAST_WORD, shared);
+    stl_le_p(s->ram + RAM_LAST_WORD(s), shared);
     trace_bcm_sdio_boot(shared);
     s->fw_up = true;
     *bcm_sdiod(s, SDIOD_TOHOSTMAILBOXDATA) = HMB_DATA_DEVREADY |
@@ -314,10 +330,10 @@ static uint32_t bcm_sdio_bp_read32(BcmSdioState *s, uint32_t addr)
         break;
     case CORE_SOCRAM:
         if (off == SOCRAM_COREINFO) {
-            return SOCRAM_NBANKS << 4;
+            return bc->chip->ram_banks << 4;
         }
         if (off == SOCRAM_BANKINFO) {
-            return SOCRAM_BANK_64K;
+            return bc->chip->bank_code;
         }
         break;
     }
@@ -383,8 +399,8 @@ static void bcm_sdio_bp_read(BcmSdioState *s, uint32_t addr, uint8_t *buf,
 {
     size_t i = 0;
 
-    if (addr < RAM_SIZE) {
-        i = MIN(len, RAM_SIZE - addr);
+    if (addr < s->ram_size) {
+        i = MIN(len, s->ram_size - addr);
         memcpy(buf, s->ram + addr, i);
     }
     for (; i < len; i++) {
@@ -399,8 +415,8 @@ static void bcm_sdio_bp_write(BcmSdioState *s, uint32_t addr,
 {
     size_t i = 0;
 
-    if (addr < RAM_SIZE) {
-        i = MIN(len, RAM_SIZE - addr);
+    if (addr < s->ram_size) {
+        i = MIN(len, s->ram_size - addr);
         memcpy(s->ram + addr, buf, i);
     }
     while (i < len) {
@@ -692,10 +708,12 @@ static void bcm_sdio_unrealize(DeviceState *dev)
 static void bcm_sdio_init(Object *obj)
 {
     BcmSdioState *s = BCM_SDIO(obj);
+    BcmSdioClass *bc = BCM_SDIO_GET_CLASS(obj);
 
     s->core.dev = DEVICE(obj);
     s->core.notify = bcm_sdio_notify;
     s->ram = g_malloc0(RAM_SIZE);
+    s->ram_size = bc->chip->ram_banks * (bc->chip->bank_code + 1) * 0x2000;
     s->tx = g_byte_array_new();
     qdev_init_gpio_out_named(DEVICE(obj), &s->host_wake, "host-wake", 1);
     qdev_init_gpio_in_named(DEVICE(obj), bcm_sdio_reg_on, "reg-on", 1);
@@ -781,7 +799,6 @@ static void bcm_sdio_class_init(ObjectClass *oc, const void *data)
     device_class_set_props(dc, bcm_sdio_props);
     set_bit(DEVICE_CATEGORY_NETWORK, dc->categories);
     sc->vendor = 0x02d0;
-    sc->device = 0xa9a6;
     sc->num_funcs = 2;
     sc->max_blksz = 512;
     sc->read = bcm_sdio_read;
@@ -796,6 +813,7 @@ static void bcm_sdio_chip_class_init(ObjectClass *oc, const void *data)
 
     BCM_SDIO_CLASS(oc)->chip = data;
     dc->desc = ((const BcmSdioChip *)data)->desc;
+    SDIO_CARD_CLASS(oc)->device = ((const BcmSdioChip *)data)->device;
 }
 
 static void bcm_sdio_register_types(void)
