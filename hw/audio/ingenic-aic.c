@@ -186,6 +186,7 @@ struct IngenicAicCodec {
     uint32_t i2sdiv;            /* I2SDIV after reset */
     uint8_t aictflr;            /* AICTFLR after reset */
     bool i2scr_rx;              /* I2SCR bit 31: a frame was recorded */
+    bool rx_burst_dup;          /* a burst's first word reads doubled */
 };
 
 /*
@@ -193,8 +194,12 @@ struct IngenicAicCodec {
  * T20X, T21N, T23N, T30X, T31X, T32LQ, T40NN, T41LQ and A1N
  */
 static const IngenicAicCodec aic_codecs[] = {
-    /* T10, T20, T30 */
-    { "t10", 0x44, 0x02, 1, -1, NULL, 0, 0x00030003, 0 },
+    /*
+     * T10, T20: read by the PDMA in bursts, the FIFO's first word of each
+     * comes back doubled (see aic_burst_dup)
+     */
+    { "t10", 0x44, 0x02, 1, -1, NULL, 0, 0x00030003, 0, false, true },
+    { "t30", 0x44, 0x02, 1, -1, NULL, 0, 0x00030003, 0 },
     { "t21", 0x44, 0x02, 1, -1, NULL, 0, 0x00030003, 8 },
     { "t31", 0x44, 0x02, 1, 0x4c, codec_reset_t31,
       I2SSR_BSY | I2SSR_RBSY | I2SSR_TBSY, 0x00030003, 8 },
@@ -208,6 +213,27 @@ static const IngenicAicCodec aic_codecs[] = {
 };
 
 static void aic_schedule(IngenicAicState *s);
+
+/*
+ * Measured on a T10L and a T20X with the vendor oss2 driver recording
+ * mono (RFTH 8, 16-bit port): the left word at the start of every RX DMA
+ * burst reaches memory doubled, as the sample plus itself wrapped to 16
+ * bits (a slot-1-only capture shows it as much as the L+R sum), once per
+ * burst: every 8 frames at 32-byte bursts, every 4 at 16-byte bursts. A
+ * single 2-byte transfer per request is clean, and so is a T30 with the
+ * same driver. A 32-bit port with PACK16 gives other garbage, not
+ * reproduced. The mechanism below the PDMA and AIC is not identified:
+ * only the burst's first read is modelled, and only through the PDMA
+ * (the CPU's reads are not known to do it).
+ */
+static bool aic_burst_dup(IngenicAicState *s)
+{
+    uint32_t pos, len, port;
+
+    return s->cdc->rx_burst_dup && s->pdma &&
+           ingenic_pdma_burst_pos(s->pdma, &pos, &len, &port) &&
+           port == 2 && !pos && len >= 16;
+}
 
 static unsigned aic_tx_thr(IngenicAicState *s)
 {
@@ -721,6 +747,9 @@ static uint64_t aic_read(void *opaque, hwaddr addr, unsigned size)
             return s->rx[s->rx_rd];
         }
         v = aic_pop(s->rx, INGENIC_AIC_RX_DEPTH, &s->rx_rd, &s->rx_n);
+        if (aic_burst_dup(s)) {
+            v = deposit32(v, 0, 16, v << 1);
+        }
         aic_update(s);
         if (s->rx_n + 1 == aic_rx_thr(s) && s->running) {
             aic_schedule(s);
