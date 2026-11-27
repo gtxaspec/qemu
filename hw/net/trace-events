@@ -37,6 +37,8 @@ atbm_tx(uint32_t packet, uint16_t fc, size_t len) "packet 0x%08x fc 0x%04x len %
 # atbm-hera-lmac.c
 atbm_hera_lmac_req(uint32_t addr, uint16_t id, unsigned len) "0x%08x: 0x%04x len %u"
 atbm_hera_lmac_ind(uint32_t addr, uint16_t id, unsigned len) "0x%08x: 0x%04x len %u"
+atbm_hera_lmac_ps(unsigned ps, unsigned queued) "sleep %u, %u messages queued"
+atbm_hera_lmac_wake(unsigned count) "a frame wakes the chip (%u)"
 
 # atbm-rtos.c
 atbm_rtos_cmd(uint32_t id, uint32_t len, uint32_t val, bool crc_ok) "command 0x%02x payload %u, first word 0x%08x, crc %d"

@@ -4,7 +4,7 @@
  * The port as a firmware's stand-in LMAC drives it, with no firmware: the
  * startup indication after RUN, a request answered in place, a scan that
  * hears the simulated access point's beacon, a transmit without a confirm,
- * and a message too long for the buffer given.
+ * a message too long for the buffer given, and the chip's sleep (ABI 2).
  *
  * Copyright (C) 2026 Alfonso Gamboa <gtxent@gmail.com>
  *
@@ -193,6 +193,47 @@ static void test_too_long(void)
     qtest_quit(qts);
 }
 
+/*
+ * ABI 2: while PS says the chip sleeps the interrupt stays low and what
+ * comes is kept; a beacon is not a frame that wakes it
+ */
+static void test_sleep(void)
+{
+    QTestState *qts = lmac_init();
+    uint8_t scan[12 + 16] = {};
+
+    g_assert_cmphex(qtest_readl(qts, L(ATBM_HERA_LMAC_WAKE_MASK)), ==,
+                    ATBM_HERA_LMAC_WAKE_UNICAST);
+    g_assert_cmpuint(qtest_readl(qts, L(ATBM_HERA_LMAC_WAKE_DELAY)), ==, 0);
+    lmac_run(qts);
+    qtest_readl(qts, L(ATBM_HERA_LMAC_IND_POP));
+    qtest_writel(qts, L(ATBM_HERA_LMAC_WAKE_MASK),
+                 ATBM_HERA_LMAC_WAKE_UNICAST | ATBM_HERA_LMAC_WAKE_GROUP);
+    qtest_writel(qts, L(ATBM_HERA_LMAC_WAKE_DELAY), 102);
+    scan[9] = 1;
+    stw_le_p(&scan[12], AP_CHANNEL);
+    lmac_req(qts, WSM_START_SCAN_REQ, scan, sizeof(scan));
+    qtest_writel(qts, L(ATBM_HERA_LMAC_PS), ATBM_HERA_LMAC_PS_SLEEP);
+    g_assert_cmphex(qtest_readl(qts, L(ATBM_HERA_LMAC_PS)), ==,
+                    ATBM_HERA_LMAC_PS_SLEEP);
+    qtest_clock_step(qts, 500 * 1000 * 1000);
+    /* the beacon and the scan's end wait, the line stays low */
+    g_assert_cmphex(qtest_readl(qts, L(ATBM_HERA_LMAC_STATUS)) &
+                    ATBM_HERA_LMAC_STATUS_PEND, ==,
+                    ATBM_HERA_LMAC_STATUS_PEND);
+    g_assert_false(hera_irq(qts, ATBM_HERA_LMAC_IRQ));
+    g_assert_cmpuint(qtest_readl(qts, L(ATBM_HERA_LMAC_WAKE_COUNT)), ==, 0);
+
+    /* awake, they are there */
+    qtest_writel(qts, L(ATBM_HERA_LMAC_PS), 0);
+    g_assert_true(hera_irq(qts, ATBM_HERA_LMAC_IRQ));
+    g_assert_cmpuint(qtest_readl(qts, L(ATBM_HERA_LMAC_IND_POP)), >, 0);
+    g_assert_cmphex(ind_id(qts), ==, WSM_RECEIVE_IND);
+    g_assert_cmpuint(qtest_readl(qts, L(ATBM_HERA_LMAC_IND_POP)), >, 0);
+    g_assert_cmphex(ind_id(qts), ==, WSM_SCAN_COMPLETE_IND);
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -203,6 +244,7 @@ int main(int argc, char **argv)
     qtest_add_func("/atbm-hera/lmac/scan", test_scan);
     qtest_add_func("/atbm-hera/lmac/tx-no-confirm", test_tx_no_confirm);
     qtest_add_func("/atbm-hera/lmac/too-long", test_too_long);
+    qtest_add_func("/atbm-hera/lmac/sleep", test_sleep);
 
     return g_test_run();
 }

@@ -22,6 +22,8 @@
 #include "hw/core/qdev-properties-system.h"
 #include "migration/vmstate.h"
 #include "system/address-spaces.h"
+#include "qemu/timer.h"
+#include "net/eth.h"
 #include "hw/net/atbm-hera-lmac.h"
 #include "atbm-wifi.h"
 #include "trace.h"
@@ -35,6 +37,12 @@ OBJECT_DECLARE_SIMPLE_TYPE(AtbmHeraLmacState, ATBM_HERA_LMAC)
 
 /* the largest WSM message the port reads: a frame and its descriptor */
 #define REQ_MAX                 4096
+
+/* a received frame's indication: the frame follows header and descriptor */
+#define WSM_RECEIVE_IND         0x0804
+#define WSM_ID_TYPE             0x1c3f
+#define RX_FRAME                (4 + 16)
+#define FC_TYPE_DATA            2
 
 struct AtbmHeraLmacState {
     SysBusDevice parent_obj;
@@ -50,12 +58,62 @@ struct AtbmHeraLmacState {
     uint32_t ind_addr;
     uint32_t ind_size;
     uint32_t ind_dropped;
+
+    qemu_irq wake;
+    QEMUTimer *wake_timer;
+    uint32_t ps;
+    uint32_t wake_mask;
+    uint32_t wake_delay;
+    uint32_t wake_count;
+    bool waking;
 };
+
+/* A frame waiting for the sleeping chip that it asked to be woken for */
+static bool atbm_hera_lmac_wanted(AtbmHeraLmacState *s)
+{
+    for (GList *l = s->core.out.head; l; l = l->next) {
+        GByteArray *m = l->data;
+        const uint8_t *f = m->data + RX_FRAME;
+        bool group;
+
+        if (m->len < RX_FRAME + 10 ||
+            (lduw_le_p(m->data + 2) & WSM_ID_TYPE) != WSM_RECEIVE_IND ||
+            ((lduw_le_p(f) >> 2) & 3) != FC_TYPE_DATA) {
+            continue;
+        }
+        group = is_multicast_ether_addr(f + 4);
+        if (s->wake_mask & (group ? ATBM_HERA_LMAC_WAKE_GROUP :
+                                    ATBM_HERA_LMAC_WAKE_UNICAST)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void atbm_hera_lmac_wake_now(void *opaque)
+{
+    AtbmHeraLmacState *s = opaque;
+
+    if (s->ps & ATBM_HERA_LMAC_PS_SLEEP) {
+        s->wake_count++;
+        trace_atbm_hera_lmac_wake(s->wake_count);
+        qemu_set_irq(s->wake, 1);
+    }
+}
 
 static void atbm_hera_lmac_notify(AtbmCore *c)
 {
     AtbmHeraLmacState *s = container_of(c, AtbmHeraLmacState, core);
 
+    if (s->ps & ATBM_HERA_LMAC_PS_SLEEP) {
+        qemu_set_irq(s->irq, 0);
+        if (!s->waking && atbm_hera_lmac_wanted(s)) {
+            s->waking = true;
+            timer_mod(s->wake_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                      (int64_t)s->wake_delay * SCALE_MS);
+        }
+        return;
+    }
     qemu_set_irq(s->irq, (s->irq_en & 1) && atbm_core_peek(c));
 }
 
@@ -164,6 +222,18 @@ static void atbm_hera_lmac_set_ctrl(AtbmHeraLmacState *s, uint32_t val)
     }
 }
 
+static void atbm_hera_lmac_set_ps(AtbmHeraLmacState *s, uint32_t val)
+{
+    s->ps = val & ATBM_HERA_LMAC_PS_SLEEP;
+    trace_atbm_hera_lmac_ps(s->ps, g_queue_get_length(&s->core.out));
+    if (!s->ps) {
+        timer_del(s->wake_timer);
+        s->waking = false;
+        qemu_set_irq(s->wake, 0);
+    }
+    atbm_hera_lmac_notify(&s->core);
+}
+
 static uint64_t atbm_hera_lmac_read(void *opaque, hwaddr addr, unsigned size)
 {
     AtbmHeraLmacState *s = opaque;
@@ -198,6 +268,14 @@ static uint64_t atbm_hera_lmac_read(void *opaque, hwaddr addr, unsigned size)
         return ldl_le_p(mac);
     case ATBM_HERA_LMAC_MAC_HI:
         return lduw_le_p(mac + 4);
+    case ATBM_HERA_LMAC_PS:
+        return s->ps;
+    case ATBM_HERA_LMAC_WAKE_MASK:
+        return s->wake_mask;
+    case ATBM_HERA_LMAC_WAKE_DELAY:
+        return s->wake_delay;
+    case ATBM_HERA_LMAC_WAKE_COUNT:
+        return s->wake_count;
     }
     qemu_log_mask(LOG_GUEST_ERROR, "%s: bad offset 0x%" HWADDR_PRIx "\n",
                   __func__, addr);
@@ -229,6 +307,16 @@ static void atbm_hera_lmac_write(void *opaque, hwaddr addr, uint64_t val,
     case ATBM_HERA_LMAC_IND_SIZE:
         s->ind_size = val;
         return;
+    case ATBM_HERA_LMAC_PS:
+        atbm_hera_lmac_set_ps(s, val);
+        return;
+    case ATBM_HERA_LMAC_WAKE_MASK:
+        s->wake_mask = val & (ATBM_HERA_LMAC_WAKE_UNICAST |
+                              ATBM_HERA_LMAC_WAKE_GROUP);
+        return;
+    case ATBM_HERA_LMAC_WAKE_DELAY:
+        s->wake_delay = val;
+        return;
     }
     qemu_log_mask(LOG_GUEST_ERROR, "%s: bad offset 0x%" HWADDR_PRIx "\n",
                   __func__, addr);
@@ -255,6 +343,13 @@ static void atbm_hera_lmac_reset_hold(Object *obj, ResetType type)
     s->ind_addr = 0;
     s->ind_size = 0;
     s->ind_dropped = 0;
+    s->ps = 0;
+    s->wake_mask = ATBM_HERA_LMAC_WAKE_UNICAST;
+    s->wake_delay = 0;
+    s->wake_count = 0;
+    s->waking = false;
+    timer_del(s->wake_timer);
+    qemu_set_irq(s->wake, 0);
     atbm_core_hold(&s->core);
 }
 
@@ -266,6 +361,9 @@ static void atbm_hera_lmac_init(Object *obj)
                           TYPE_ATBM_HERA_LMAC, ATBM_HERA_LMAC_SIZE);
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->mmio);
     sysbus_init_irq(SYS_BUS_DEVICE(obj), &s->irq);
+    qdev_init_gpio_out_named(DEVICE(obj), &s->wake, "wake", 1);
+    s->wake_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, atbm_hera_lmac_wake_now,
+                                 s);
     s->core.dev = DEVICE(obj);
     s->core.notify = atbm_hera_lmac_notify;
     /* the Hera's PHY version, as the 6041's driver reads it */
@@ -287,6 +385,7 @@ static void atbm_hera_lmac_unrealize(DeviceState *dev)
 
 static void atbm_hera_lmac_finalize(Object *obj)
 {
+    timer_free(ATBM_HERA_LMAC(obj)->wake_timer);
     atbm_core_finalize(&ATBM_HERA_LMAC(obj)->core);
 }
 
@@ -297,6 +396,30 @@ static int atbm_hera_lmac_post_load(void *opaque, int version_id)
     atbm_hera_lmac_notify(&s->core);
     return 0;
 }
+
+static bool atbm_hera_lmac_ps_needed(void *opaque)
+{
+    AtbmHeraLmacState *s = opaque;
+
+    return s->ps || s->wake_count || s->wake_delay ||
+           s->wake_mask != ATBM_HERA_LMAC_WAKE_UNICAST;
+}
+
+static const VMStateDescription vmstate_atbm_hera_lmac_ps = {
+    .name = TYPE_ATBM_HERA_LMAC "/ps",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = atbm_hera_lmac_ps_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(ps, AtbmHeraLmacState),
+        VMSTATE_UINT32(wake_mask, AtbmHeraLmacState),
+        VMSTATE_UINT32(wake_delay, AtbmHeraLmacState),
+        VMSTATE_UINT32(wake_count, AtbmHeraLmacState),
+        VMSTATE_BOOL(waking, AtbmHeraLmacState),
+        VMSTATE_TIMER_PTR(wake_timer, AtbmHeraLmacState),
+        VMSTATE_END_OF_LIST()
+    },
+};
 
 static const VMStateDescription vmstate_atbm_hera_lmac = {
     .name = TYPE_ATBM_HERA_LMAC,
@@ -313,6 +436,10 @@ static const VMStateDescription vmstate_atbm_hera_lmac = {
         VMSTATE_UINT32(ind_dropped, AtbmHeraLmacState),
         VMSTATE_ATBM_CORE(core, AtbmHeraLmacState),
         VMSTATE_END_OF_LIST()
+    },
+    .subsections = (const VMStateDescription * const []) {
+        &vmstate_atbm_hera_lmac_ps,
+        NULL
     },
 };
 

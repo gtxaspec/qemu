@@ -35,7 +35,7 @@
 #define ATBM_HERA_LMAC_ID           0x00
 #define ATBM_HERA_LMAC_VERSION      0x04
 #define ATBM_HERA_LMAC_MAGIC        0x434d4c51
-#define ATBM_HERA_LMAC_ABI          1
+#define ATBM_HERA_LMAC_ABI          2
 
 /*
  * CTRL: RUN set starts the firmware model, which gives a startup
@@ -79,5 +79,27 @@
 /* the station's MAC address the model gives (bytes 0-3, then 4-5) */
 #define ATBM_HERA_LMAC_MAC_LO       0x30
 #define ATBM_HERA_LMAC_MAC_HI       0x34
+
+/*
+ * ABI 2: the chip's sleep. A guest that never writes PS sees ABI 1.
+ *
+ * PS bit 0: the chip sleeps (its CPU is off). The association stays, and
+ * what the access point sends is kept for the chip (the queue IND_POP
+ * reads, which has a bound: past it the network behind waits), but the
+ * interrupt stays low. A received data frame whose destination WAKE_MASK
+ * names (bit 0 the chip's own address, bit 1 a group address) raises the
+ * port's "wake" line to the chip's power controller WAKE_DELAY_MS ms
+ * later (the next beacon the chip would listen to; 0: at once), and
+ * WAKE_COUNT counts these wakes. Clearing PS lowers "wake" and lets the
+ * interrupt follow STATUS_PEND again. WAKE_MASK resets to 1, the delay to
+ * 0.
+ */
+#define ATBM_HERA_LMAC_PS           0x38
+#define ATBM_HERA_LMAC_PS_SLEEP     (1u << 0)
+#define ATBM_HERA_LMAC_WAKE_MASK    0x3c
+#define ATBM_HERA_LMAC_WAKE_UNICAST (1u << 0)
+#define ATBM_HERA_LMAC_WAKE_GROUP   (1u << 1)
+#define ATBM_HERA_LMAC_WAKE_DELAY   0x40
+#define ATBM_HERA_LMAC_WAKE_COUNT   0x44
 
 #endif
