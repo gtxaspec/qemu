@@ -1589,6 +1589,7 @@ F: tests/qtest/ingenic-*.c
 AICSemi AIC8800, AltoBeam ATBM60xx, Broadcom BCM4343x, HiSilicon Hi3881 and WS73V100, Huge-IC TXW901U, iComm-semi SSV6006C, MediaTek MT7601U, Realtek RTL8188/RTL8189/RTL8192F/RTL8733B, Seekwave SWT6621S and WuQi WQ9001 Wi-Fi, and the access point and client
 M: Alfonso Gamboa <gtxent@gmail.com>
 S: Maintained
+F: contrib/atbm-hera-lmac/
 F: hw/net/aic-*
 F: hw/net/atbm-*
 F: hw/net/bcm-*

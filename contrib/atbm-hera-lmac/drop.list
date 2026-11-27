@@ -1,0 +1,82 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# libwifi.a members taken out: the lower MAC (WSM firmware), the MAC/PHY/RF
+# drivers under it.
+# Kept: hi_internal.o (the HMAC<->LMAC rings), scheduler.o, ti.o, apb.o,
+# rtl.o, hif.o, phy_utils.o (register bit helpers), dbg_print.o (putc),
+# sm_region.o (the LMAC packet memory, where hi_sdio.o keeps its buffers),
+# pwr_ARESA.o (power), and all of HMAC.
+cmd_line.o
+descriptor.o
+enc.o
+epta_hw_regs.o
+epta_if.o
+frames.o
+hi_msg.o
+lmac_debug.o
+lmac_hash_key.o
+lmac_main.o
+lmac_pwr.o
+lmc_bab.o
+lmc_beacon.o
+lmc_cfo_cal.o
+lmc_epta_if.o
+lmc.o
+lmc_rates.o
+lmc_rx.o
+lmc_sched.o
+lmc_tx.o
+main.o
+mgt.o
+mib.o
+nav.o
+pac_bab.o
+pac_init.o
+pac_phy.o
+pas_cts.o
+pas.o
+pas_rates.o
+phy_conf.o
+phy_cut1_reg_cfg.o
+phy_mac.o
+phy_mod.o
+phy_rf_8601_c1.o
+phy_rf_cal_utils.o
+phy_rf_cl_pwr_ctrl.o
+phy_rf_init_8601_c1.o
+phy_rf.o
+phy_rf_rx_cal_8601_c1.o
+phy_rf_rx.o
+phy_rf_tx_8601_c1.o
+phy_rf_tx.o
+phy_sdd_hdlr.o
+privacy.o
+ps.o
+qos.o
+rx_defrag.o
+rx_fifo.o
+rx_handler.o
+rx_tuple.o
+sdd.o
+sm_rx_fifo_alias.o
+syn_reset.o
+syn_scan.o
+syn_start.o
+template.o
+tx_add_que_10.o
+tx_autoresp.o
+tx_backoff.o
+tx_beacon.o
+tx_enc_comp_09.o
+tx_enc_que_07.o
+tx_lmac_req_02.o
+tx_ptcs.o
+tx_recipe.o
+tx_rxd_pm.o
+tx_set_frm_03.o
+tx_wsm_req_01.o
+wsmapi.o
+wsmbeaconfilter.o
+wsmlmac.o
+wsm_sdd_static.o
+wsm_sdd_table.o

@@ -180,6 +180,13 @@ numbered 24 is driven high (its wake level, in the firmware's GPIO
 numbers). The same lines are named gpios of the card. The protocol
 is in ``include/hw/misc/atbm-hera-link.h``.
 
+The board models no radio: the firmware's lower MAC drives hardware with
+no public description. For Wi-Fi, link the firmware with the stand-in in
+``contrib/atbm-hera-lmac/``, which hands its WSM messages to the board's
+paravirtual LMAC port; the port takes the next ``-nic`` and answers as a
+simulated access point (its ``ssid`` and ``psk`` properties).
+Its README says how to build it from the chip's SDK.
+
 Run the chip with ``-icount shift=auto,sleep=on``: without it the chip's
 time follows the host's, and its watchdog resets it whenever its process
 falls a few seconds behind, which a loaded host does to it. The camera
