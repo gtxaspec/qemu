@@ -629,3 +629,7 @@ atbm_hera_hif_cpu_reset(const char *side, int level) "CONFIG[14] cpu reset writt
 # atbm-hera-crypto.c
 atbm_hera_cipher_run(uint32_t ctrl, uint32_t in, uint32_t out, uint32_t size) "ctrl 0x%x in 0x%08x out 0x%08x size %u"
 atbm_hera_hash_run(uint32_t ctrl, uint32_t src, uint32_t len) "ctrl 0x%x src 0x%08x len %u"
+
+# atbm-hera-smu.c
+atbm_hera_smu_sleep(unsigned mode, uint32_t bd, int64_t deep_ns) "sleep %u bd 0x%08x deep timer %" PRId64 " ns"
+atbm_hera_smu_wake(unsigned mode, unsigned rtc, unsigned pins, unsigned wlan, uint32_t boot) "wake from %u: rtc 0x%x pins 0x%x wlan %u boot 0x%08x"
