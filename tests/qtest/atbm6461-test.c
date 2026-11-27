@@ -90,26 +90,88 @@ static void test_rx_bits(void)
     unlink(flash);
 }
 
-/* Hardware_Reboot() writes function 8 to pins 24 and 25: the chip restarts */
-static void test_reboot_pads(void)
+#define WRTC_CTRL       (SMU + 0x10f4)
+#define WRTC_LOAD       (SMU + 0x10f8)
+#define WRTC_COUNT      (SMU + 0x1100)
+#define WRTC_KEY        0xa5a50000
+
+static bool yield_pending(QTestState *qts)
+{
+    return qtest_readl(qts, PLIC_PENDING) & (1u << 27);
+}
+
+/*
+ * The writes system_reboot() and Hardware_Reboot() make before the last
+ * one: the reset flag, the interrupt mask and the pads of pins 24 and 25
+ * (which a stock chip already has at function 8). None resets the chip.
+ */
+static void test_reboot_not_pads(void)
 {
     g_autofree char *flash = make_flash();
     QTestState *qts = start(flash, "-serial null -serial null");
 
     qtest_writel(qts, SMU_YIELD, 1);
-    g_assert_cmphex(qtest_readl(qts, PLIC_PENDING) & (1u << 27), ==,
-                    1u << 27);
-
-    /* one pin alone, and other functions, change nothing but the pad */
-    qtest_writel(qts, PADS_24_25, 0x00000008);
-    g_assert_cmphex(qtest_readl(qts, PADS_24_25), ==, 0x00000008);
-    qtest_writel(qts, PADS_24_25, 0x00030003);
-    g_assert_cmphex(qtest_readl(qts, PLIC_PENDING) & (1u << 27), ==,
-                    1u << 27);
-
+    qtest_writel(qts, SMU + 0x1030, qtest_readl(qts, SMU + 0x1030) | 8);
+    qtest_writel(qts, SMU + 0x08, 0xffffffff);
     qtest_writel(qts, PADS_24_25, 0x26082608);
+    qtest_clock_step(qts, 100000000);
+    g_assert_true(yield_pending(qts));
+    g_assert_cmphex(qtest_readl(qts, PADS_24_25), ==, 0x26082608);
+    qtest_quit(qts);
+    unlink(flash);
+}
+
+/*
+ * Hardware_Reboot()'s last call, "wdt_rtc_rebo set": stop and clear the
+ * watchdog, 100 counts at 100 kHz, start it. 1 ms later the chip resets.
+ */
+static void test_reboot_wdt_rtc(void)
+{
+    g_autofree char *flash = make_flash();
+    QTestState *qts = start(flash, "-serial null -serial null");
+
+    qtest_writel(qts, SMU_YIELD, 1);
+    qtest_writel(qts, WRTC_CTRL, WRTC_KEY | 2);
+    qtest_writel(qts, WRTC_LOAD, 100);
+    qtest_writel(qts, WRTC_CTRL, WRTC_KEY | 1);
+    qtest_writel(qts, WRTC_CTRL, WRTC_KEY | 0xa501);
+    qtest_clock_step(qts, 500000);
+    g_assert_cmpuint(qtest_readl(qts, WRTC_COUNT), ==, 50);
+    qtest_clock_step(qts, 490000);
+    g_assert_true(yield_pending(qts));
+    qtest_clock_step(qts, 10000);
+    qtest_qmp_eventwait(qts, "WATCHDOG");
     qtest_qmp_eventwait(qts, "RESET");
-    g_assert_cmphex(qtest_readl(qts, PLIC_PENDING) & (1u << 27), ==, 0);
+    g_assert_false(yield_pending(qts));
+    /* the reset stops it */
+    g_assert_cmpuint(qtest_readl(qts, WRTC_COUNT), ==, 0);
+    qtest_quit(qts);
+    unlink(flash);
+}
+
+/* Fed with bit 1, it does not expire; a write without the key is dropped */
+static void test_wdt_rtc_feed(void)
+{
+    g_autofree char *flash = make_flash();
+    QTestState *qts = start(flash, "-serial null -serial null");
+
+    qtest_writel(qts, SMU_YIELD, 1);
+    qtest_writel(qts, WRTC_LOAD, 1000);
+    qtest_writel(qts, WRTC_CTRL, WRTC_KEY | 1);
+    for (int i = 0; i < 5; i++) {
+        qtest_clock_step(qts, 8000000);
+        g_assert_cmpuint(qtest_readl(qts, WRTC_COUNT), ==, 800);
+        qtest_writel(qts, WRTC_CTRL, WRTC_KEY | 3);
+    }
+    /* stopped, it keeps its count */
+    qtest_clock_step(qts, 5000000);
+    qtest_writel(qts, WRTC_CTRL, WRTC_KEY);
+    qtest_clock_step(qts, 50000000);
+    g_assert_cmpuint(qtest_readl(qts, WRTC_COUNT), ==, 500);
+    qtest_writel(qts, WRTC_CTRL, 1);
+    qtest_clock_step(qts, 50000000);
+    g_assert_cmpuint(qtest_readl(qts, WRTC_COUNT), ==, 500);
+    g_assert_true(yield_pending(qts));
     qtest_quit(qts);
     unlink(flash);
 }
@@ -154,9 +216,11 @@ int main(int argc, char **argv)
 
     qtest_add_func("/atbm6461/smu/yield", test_yield);
     qtest_add_func("/atbm6461/smu/uart-rx-bits", test_rx_bits);
-    qtest_add_func("/atbm6461/pads/reboot", test_reboot_pads);
-    qtest_add_func("/atbm6461/reset/state", test_reset_state);
+    qtest_add_func("/atbm6461/reboot/not-pads", test_reboot_not_pads);
+    qtest_add_func("/atbm6461/reboot/wdt-rtc", test_reboot_wdt_rtc);
+    qtest_add_func("/atbm6461/wdt-rtc/feed", test_wdt_rtc_feed);
     qtest_add_func("/atbm6461/chip-version", test_chip_version);
+    qtest_add_func("/atbm6461/reset/state", test_reset_state);
 
     return g_test_run();
 }

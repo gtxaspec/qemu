@@ -60,9 +60,11 @@ What works
 The firmware boots to its RTOS and application tasks and answers AT
 commands on UART2. Paired with a camera's QEMU over the link device
 (``-global atbm-hera-link.chardev=<id>``), it serves the camera as its SDIO
-Wi-Fi chip. The watchdogs reset the chip, and so does the firmware's
-reboot, which sets the function of pads 24 and 25; both tell the camera
-through the link, which does what its ``on-chip-reset`` property says.
+Wi-Fi chip. The watchdog in the clock and power block (the firmware's
+``wdt_rtc``) resets the chip when it expires, which is also how the
+firmware reboots it; that and the other watchdogs' last stage tell the
+camera through the link, which does what its ``on-chip-reset`` property
+says.
 ``-global atbm-hera-nor.restore-on-reset=on`` puts the flash back as loaded
 at each reset, which a firmware that saves its configuration there and
 then runs differently on the next boot needs. The pairing is described in

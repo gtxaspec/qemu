@@ -50,11 +50,13 @@
 #include "hw/core/cpu.h"
 #include "system/reset.h"
 #include "system/runstate.h"
+#include "system/watchdog.h"
 #include "hw/intc/sifive_plic.h"
 #include "hw/riscv/riscv_hart.h"
 #include "system/address-spaces.h"
 #include "system/system.h"
 #include "target/riscv/cpu.h"
+#include "trace.h"
 
 #define TYPE_ATBM6461_MACHINE MACHINE_TYPE_NAME("atbm6461")
 OBJECT_DECLARE_SIMPLE_TYPE(Atbm6461State, ATBM6461_MACHINE)
@@ -98,10 +100,11 @@ struct Atbm6461State {
     GHashTable *regs;
     AtbmHeraNorState *nor;
     DeviceState *smu;
-    int64_t cnt_start;
     MemoryRegion plicsw;
-    MemoryRegion reboot;
-    MemoryRegion *pads;
+    QEMUTimer *wrtc_timer;
+    int64_t wrtc_start;
+    uint32_t wrtc_base, wrtc_load;
+    bool wrtc_on;
     qemu_irq plicsw_irq, yield_irq, *uart_irq;
     uint32_t uart_lvl;
     uint32_t held;
@@ -213,6 +216,92 @@ static MemoryRegion *smu_mr(Atbm6461State *s)
     return sysbus_mmio_get_region(SYS_BUS_DEVICE(s->smu), 0);
 }
 
+/*
+ * The watchdog in the always-on part of the clock and power block, which
+ * the firmware calls wdt_rtc and which resets the chip: 0x10f4 its
+ * control, 0x10f8 the count it expires at, 0x1100 the count. Every write
+ * of the control carries 0xa5a5 in [31:16]; bit 0 runs the count, a 1 in
+ * bit 1 clears it. The count runs at 100 kHz (the firmware calibrates it
+ * against its timer at boot: "wdt_calib 10,100" on silicon, 10 us a tick).
+ * At boot the firmware arms it for 20 s and feeds it with bit 1 along with
+ * its interrupt watchdog. The reboot path (system_reboot, then
+ * Hardware_Reboot's last call, "wdt_rtc_rebo set") stops and clears it,
+ * sets 100 counts, starts it and spins: on silicon the bootloader runs
+ * again soon after, and the camera SoC's power is cut.
+ * Inferred from that code: an expiry resets the chip (a stock chip
+ * reboots after the call and neither the pad write before it nor
+ * 0x16101030 bit 3 does it); the count expires once it reaches the
+ * limit; bit 1 reads 0; a write without the key is dropped. What
+ * Hardware_Reboot finally writes to [15:8] (0xa5) is kept, its meaning
+ * unknown.
+ */
+#define WRTC_CTRL       0x10f4
+#define WRTC_LOAD       0x10f8
+#define WRTC_COUNT      0x1100
+#define WRTC_KEY        0xa5a5
+#define WRTC_RUN        BIT(0)
+#define WRTC_CLEAR      BIT(1)
+#define WRTC_NS         10000           /* a tick at 100 kHz */
+
+static uint32_t wrtc_count(Atbm6461State *s)
+{
+    if (!s->wrtc_on) {
+        return s->wrtc_base;
+    }
+    return s->wrtc_base + (qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) -
+                           s->wrtc_start) / WRTC_NS;
+}
+
+static void wrtc_update(Atbm6461State *s)
+{
+    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+
+    if (!s->wrtc_on) {
+        timer_del(s->wrtc_timer);
+    } else if (s->wrtc_load > wrtc_count(s)) {
+        timer_mod(s->wrtc_timer, s->wrtc_start +
+                  (int64_t)(s->wrtc_load - s->wrtc_base) * WRTC_NS);
+    } else {
+        timer_mod(s->wrtc_timer, now);
+    }
+}
+
+/* false when the write is dropped */
+static bool wrtc_ctrl_write(Atbm6461State *s, uint32_t val)
+{
+    bool on = val & WRTC_RUN;
+
+    if (val >> 16 != WRTC_KEY) {
+        qemu_log_mask(LOG_GUEST_ERROR, "atbm6461: wdt_rtc control 0x%x "
+                      "without the key\n", val);
+        return false;
+    }
+    trace_atbm6461_wdt_rtc_ctrl(val, wrtc_count(s));
+    if (s->wrtc_on && !on) {
+        s->wrtc_base = wrtc_count(s);
+    }
+    if (on && (!s->wrtc_on || (val & WRTC_CLEAR))) {
+        s->wrtc_start = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    }
+    if (val & WRTC_CLEAR) {
+        s->wrtc_base = 0;
+    }
+    s->wrtc_on = on;
+    wrtc_update(s);
+    return true;
+}
+
+static void wrtc_expire(void *opaque)
+{
+    Atbm6461State *s = opaque;
+
+    trace_atbm6461_wdt_rtc_expire(s->wrtc_load);
+    if (get_watchdog_action() == WATCHDOG_ACTION_RESET) {
+        qemu_set_irq(s->chip_reset, AHL_CHIP_RESET_WDT);
+    }
+    watchdog_perform_action();
+}
+
 static uint64_t sys_read(void *opaque, hwaddr addr, unsigned size)
 {
     Atbm6461State *s = opaque;
@@ -245,10 +334,8 @@ static uint64_t sys_read(void *opaque, hwaddr addr, unsigned size)
             }
         }
     }
-    if ((addr & ~3) == 0x1100) {
-        /* 10 us a tick from when 0x10f4 bit 0 is set (wdt_calib's start) */
-        return muldiv64(qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) - s->cnt_start,
-                        100000, NANOSECONDS_PER_SECOND);
+    if ((addr & ~3) == WRTC_COUNT) {
+        return wrtc_count(s);
     }
     for (i = 0; i < ARRAY_SIZE(sys_ready); i++) {
         if (sys_ready[i].off == (addr & ~3)) {
@@ -266,8 +353,16 @@ static void sys_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
         /* bit 0 asks for the RTOS's yield, interrupt 27, until it is cleared */
         qemu_set_irq(s->yield_irq, val & 1);
     }
-    if ((addr & ~3) == 0x10f4 && (val & 1)) {
-        s->cnt_start = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    if (addr == WRTC_CTRL && size == 4) {
+        if (!wrtc_ctrl_write(s, val)) {
+            return;
+        }
+        val &= ~WRTC_CLEAR;
+    }
+    if (addr == WRTC_LOAD && size == 4) {
+        s->wrtc_load = val;
+        trace_atbm6461_wdt_rtc_load(val, wrtc_count(s));
+        wrtc_update(s);
     }
     memory_region_dispatch_write(smu_mr(s), addr, val,
                                  size_memop(size) | MO_LE,
@@ -319,6 +414,20 @@ static DeviceState *ares_dev(Atbm6461State *s, const char *type,
         ares_connect(s, dev, 0, irq);
     }
     return dev;
+}
+
+/* revision 1 and the IVB register's reset value, as a 6461 reads them */
+static void ares_wdt(Atbm6461State *s, const char *name, hwaddr base,
+                     uint32_t ivb)
+{
+    DeviceState *dev = qdev_new("atbm-hera-wdt");
+
+    object_property_add_child(OBJECT(s), name, OBJECT(dev));
+    qdev_prop_set_uint32(dev, "revision", 1);
+    qdev_prop_set_uint32(dev, "ivb", ivb);
+    sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
+    sysbus_mmio_map(SYS_BUS_DEVICE(dev), 0, base);
+    qdev_connect_gpio_out_named(dev, "all-reset", 0, s->ctl[4]);
 }
 
 /*
@@ -384,49 +493,7 @@ static const MemoryRegionOps plicsw_ops = {
     .valid.max_access_size = 4,
 };
 
-/*
- * The firmware's Hardware_Reboot() (the stock image's system_reboot() ends
- * in it) prints, then sets the pad function of pins 24 and 25 to 8 with one
- * write of 0x26082608 to 0x17400034 and spins. A guess from that code and
- * its name: those pads drive the chip's own reset, so the chip restarts.
- * Boot never writes this function there. The dev's clean image stubs the
- * call out, and its chip then sits in the trap handler.
- */
 #define PADS_BASE         0x17400000
-#define PADS24_25         (PADS_BASE + 0x34)
-#define PADS24_25_RESET   0x00080008
-#define PADS24_25_MASK    0x000f000f
-
-static void pads_write(void *opaque, hwaddr addr, uint64_t val,
-                       unsigned size)
-{
-    Atbm6461State *s = opaque;
-
-    memory_region_dispatch_write(s->pads, addr, val, MO_32,
-                                 MEMTXATTRS_UNSPECIFIED);
-    if ((val & PADS24_25_MASK) == PADS24_25_RESET) {
-        qemu_set_irq(s->chip_reset, AHL_CHIP_RESET_REQUEST);
-        qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
-    }
-}
-
-static uint64_t pads_read(void *opaque, hwaddr addr, unsigned size)
-{
-    Atbm6461State *s = opaque;
-    uint64_t val = 0;
-
-    memory_region_dispatch_read(s->pads, addr, &val, MO_32,
-                                MEMTXATTRS_UNSPECIFIED);
-    return val;
-}
-
-static const MemoryRegionOps pads_ops = {
-    .read = pads_read,
-    .write = pads_write,
-    .endianness = DEVICE_LITTLE_ENDIAN,
-    .valid.min_access_size = 4,
-    .valid.max_access_size = 4,
-};
 
 /*
  * Lines into the core: 0 the SDIO host's hold of the CPU in reset (HIF
@@ -478,7 +545,9 @@ static void ares_reset(void *opaque)
                             &s->mac_c, &s->sram };
 
     g_hash_table_remove_all(s->regs);
-    s->cnt_start = 0;
+    s->wrtc_on = false;
+    s->wrtc_base = s->wrtc_load = 0;
+    timer_del(s->wrtc_timer);
     s->plicsw_pend = s->plicsw_en = 0;
     s->uart_lvl = 0;
     qemu_set_irq(s->plicsw_irq, 0);
@@ -675,20 +744,20 @@ static void ares_init(MachineState *machine)
     s->yield_irq = qdev_get_gpio_in(s->plic, 27);
     memory_region_init_io(&s->sys1, NULL, &sys_ops, s, "atbm6461.sys", 0x2000);
     memory_region_add_subregion_overlap(sys, 0x16100000, &s->sys1, 1);
+    s->wrtc_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, wrtc_expire, s);
     ares_connect(s, dev, 1, 30);
     dev = ares_dev(s, "atbm-hera-gpio", "gpio", 0x16800000, 23, NULL);
     ares_link(s, dev);
     sysbus_mmio_map(SYS_BUS_DEVICE(dev), 1, PADS_BASE);
-    s->pads = sysbus_mmio_get_region(SYS_BUS_DEVICE(dev), 1);
-    memory_region_init_io(&s->reboot, NULL, &pads_ops, s, "atbm6461.pads24",
-                          4);
-    memory_region_add_subregion_overlap(sys, PADS24_25, &s->reboot, 1);
     dev = ares_dev(s, "atbm-hera-rtc", "rtc1", 0x16700000, 25, NULL);
     ares_connect(s, dev, 1, 26);
-    dev = ares_dev(s, "atbm-hera-wdt", "wdt1", 0x16600000, -1, NULL);
-    qdev_connect_gpio_out_named(dev, "all-reset", 0, s->ctl[4]);
-    dev = ares_dev(s, "atbm-hera-wdt", "wdt2", 0x17500000, -1, NULL);
-    qdev_connect_gpio_out_named(dev, "all-reset", 0, s->ctl[4]);
+    /*
+     * The two ATCWDT200s. The firmware arms the first with its interrupt
+     * stage only (CTRL 0x000e2125 on silicon, the reset stages off) and
+     * leaves the second off: the wdt_rtc is what resets the chip
+     */
+    ares_wdt(s, "wdt1", 0x16600000, 0x200f);
+    ares_wdt(s, "wdt2", 0x17500000, 0x1001);
 
     memory_region_init_io(&s->plicsw, NULL, &plicsw_ops, s, "atbm6461.plicsw",
                           0x400000);

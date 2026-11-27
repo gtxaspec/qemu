@@ -31,7 +31,9 @@
 #define GPIO            0x16800000
 #define G_DIR0          0x28
 #define G_DOUT          0x24
-#define PADS_24_25      0x17400034
+#define SMU             0x16100000
+#define WRTC_CTRL       0x10f4
+#define WRTC_LOAD       0x10f8
 #define WDT1            0x16600000
 #define WDT_CTRL        0x10
 #define WDT_WEN         0x18
@@ -193,6 +195,16 @@ static uint32_t next_chip_reset(int fd)
     }
 }
 
+/* Hardware_Reboot()'s last call: the wdt_rtc, 100 counts at 100 kHz */
+static void wdt_rtc_reboot(QTestState *qts)
+{
+    qtest_writel(qts, SMU + WRTC_CTRL, 0xa5a50002);
+    qtest_writel(qts, SMU + WRTC_LOAD, 100);
+    qtest_writel(qts, SMU + WRTC_CTRL, 0xa5a50001);
+    qtest_clock_step(qts, 1000000);
+    qtest_qmp_eventwait(qts, "RESET");
+}
+
 static void test_chip_reset(void)
 {
     g_autofree char *flash = g_strdup_printf("%s/atbm6461-cr-%d.bin",
@@ -208,8 +220,7 @@ static void test_chip_reset(void)
 
     /* a SoC without the capability is told nothing */
     chip_up(flash, sock, 0, &qts, &fd);
-    qtest_writel(qts, PADS_24_25, 0x26082608);
-    qtest_qmp_eventwait(qts, "RESET");
+    wdt_rtc_reboot(qts);
     g_assert_cmpuint(next_chip_reset(fd), ==, 0);
     close(fd);
     qtest_quit(qts);
@@ -218,10 +229,9 @@ static void test_chip_reset(void)
     /* the first word is that it has started */
     g_assert_cmpuint(next_chip_reset(fd), ==, AHL_CHIP_RESET_COLD);
 
-    /* Hardware_Reboot()'s pads */
-    qtest_writel(qts, PADS_24_25, 0x26082608);
-    qtest_qmp_eventwait(qts, "RESET");
-    g_assert_cmpuint(next_chip_reset(fd), ==, AHL_CHIP_RESET_REQUEST);
+    /* the firmware's reboot, through the wdt_rtc */
+    wdt_rtc_reboot(qts);
+    g_assert_cmpuint(next_chip_reset(fd), ==, AHL_CHIP_RESET_WDT);
 
     /* the last stage of a watchdog: 64 clocks, then 16 and 16 */
     qtest_writel(qts, WDT1 + WDT_WEN, 0x5aa5);
