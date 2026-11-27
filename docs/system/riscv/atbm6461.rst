@@ -1,0 +1,82 @@
+ATBM6461 Wi-Fi/IoT MCU (``atbm6461``)
+=====================================
+
+The ``atbm6461`` machine, in ``qemu-system-riscv32``, is AltoBeam's
+ATBM6461 Wi-Fi and IoT chip. Its CPU is an Andes AndeStar V5 RV32IMC core,
+selected as ``-cpu andes-ares`` (the only one the machine accepts), with
+PMP and these Andes extensions:
+
+- the performance extension (``xandesperf``): GP-relative loads and
+  stores, bit and constant branches, bitfield and byte-search
+  instructions
+- ``EXEC.IT``, with its table in ``UITB``
+- the Andes custom CSRs ``0x7c0`` to ``0x7df``, and the config CSRs, kept
+  as plain storage
+
+The chip's peripherals are those of the ATBM6441, which
+:doc:`../target-nds32` describes, so the same models serve both.
+
+Memory map
+----------
+
+=================== ==========================================================
+Address             What
+=================== ==========================================================
+``0x00070000``      ITCM, 64 KiB, filled by the bootloader from flash
+``0x00100000``      flash, cached window
+``0x00400000``      flash, uncached window
+``0x00800000``      DTCM, 320 KiB (the RTOS heap and stacks)
+``0x01400000``      flash from ``0x1000`` up, where the bootloader is linked
+``0x09000000``      SRAM, 256 KiB (the bootloader's data and RAM code)
+``0x0a000000``      Wi-Fi MAC and PHY, with the MAC's RAM and descriptors
+``0x14000000``      DMA controller
+``0x16000000``      APB peripherals
+``0x17000000``      more APB peripherals
+``0xe4000000``      PLIC
+``0xe6400000``      software-interrupt PLIC (the RTOS's yield)
+``0xff000000``      boot ROM stand-in
+=================== ==========================================================
+
+Address 0 faults, as it does on the chip. The flash is a 4 MiB SPI NOR
+device.
+
+Booting
+-------
+
+The boot ROM is not available. The machine needs the chip's flash image,
+which it does not contain, as ``-drive if=mtd,format=raw``. A stand-in for
+the ROM at the reset vector jumps into the bootloader in the flash, which
+copies the firmware to the ITCM and runs it. The first ``-serial`` is
+UART1, the second UART2, where the firmware's AT console is, and the third
+UART3::
+
+   qemu-system-riscv32 -M atbm6461 -icount shift=auto,sleep=on \
+       -display none -drive file=flash.bin,format=raw,if=mtd \
+       -serial null -serial stdio
+
+What works
+----------
+
+The firmware boots to its RTOS and application tasks and answers AT
+commands on UART2. Paired with a camera's QEMU over the link device
+(``-global atbm-hera-link.chardev=<id>``), it serves the camera as its SDIO
+Wi-Fi chip. The watchdogs reset the chip, and so does the firmware's
+reboot, which sets the function of pads 24 and 25; both tell the camera
+through the link, which does what its ``on-chip-reset`` property says.
+``-global atbm-hera-nor.restore-on-reset=on`` puts the flash back as loaded
+at each reset, which a firmware that saves its configuration there and
+then runs differently on the next boot needs. The pairing is described in
+:ref:`atbm-own-firmware`.
+
+Not modelled
+------------
+
+The Wi-Fi MAC and PHY are register stubs, which keep the firmware up and
+log what it does with them (``-d unimp``); there is no radio. The chip's second CPU, which runs Bluetooth, is
+not modelled: the firmware copies its code to ``0x20060000`` and
+``0x20800000``, which are plain RAM here, and a chip that has saved its
+configuration reaches a crash in a boot without that core.
+
+Run the chip with ``-icount shift=auto,sleep=on``: without it the chip's
+time follows the host's, and its watchdog resets it whenever its process
+falls behind.

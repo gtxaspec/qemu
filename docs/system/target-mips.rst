@@ -148,6 +148,8 @@ binaries, covers video, audio, SPI NOR and NAND, the test inputs
 trace events (``-trace 'ingenic_isp_*'``, read with ``isp-trace.py``)
 and Wi-Fi in detail.
 
+.. _atbm-own-firmware:
+
 ATBM6441 with its own firmware
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 

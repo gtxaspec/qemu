@@ -1590,6 +1590,8 @@ AICSemi AIC8800, AltoBeam ATBM60xx, Broadcom BCM4343x, HiSilicon Hi3881 and WS73
 M: Alfonso Gamboa <gtxent@gmail.com>
 S: Maintained
 F: contrib/atbm-hera-lmac/
+F: docs/system/riscv/atbm6461.rst
+F: docs/system/target-nds32.rst
 F: hw/net/aic-*
 F: hw/net/atbm-*
 F: hw/net/bcm-*
