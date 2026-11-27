@@ -114,6 +114,17 @@ static void test_reboot_pads(void)
     unlink(flash);
 }
 
+/* The chip version register: 0xb3 on a stock 6461 */
+static void test_chip_version(void)
+{
+    g_autofree char *flash = make_flash();
+    QTestState *qts = start(flash, "-serial null -serial null");
+
+    g_assert_cmphex(qtest_readl(qts, 0x0acc017c), ==, 0xb3);
+    qtest_quit(qts);
+    unlink(flash);
+}
+
 /* A reset starts from a cold boot's state: memories, registers, the HIF */
 static void test_reset_state(void)
 {
@@ -145,6 +156,7 @@ int main(int argc, char **argv)
     qtest_add_func("/atbm6461/smu/uart-rx-bits", test_rx_bits);
     qtest_add_func("/atbm6461/pads/reboot", test_reboot_pads);
     qtest_add_func("/atbm6461/reset/state", test_reset_state);
+    qtest_add_func("/atbm6461/chip-version", test_chip_version);
 
     return g_test_run();
 }

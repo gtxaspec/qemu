@@ -94,7 +94,7 @@ static const AtbmSdioChip atbm_sdio_chips[] = {
         .hera = true, .iot_only = true, .mcu = true,
     }, {
         .name = "atbm6461", .desc = "AltoBeam ATBM6461 SDIO Wi-Fi and MCU",
-        .device = 0x6011, .func_class = 0x07, .chip_id = 0xb1,
+        .device = 0x6011, .func_class = 0x07, .chip_id = 0xb3,
         .hera = true, .iot_only = true, .wide_hdr = true, .xmit_offset = true,
         .rtos = true,
     }, {

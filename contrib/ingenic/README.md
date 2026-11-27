@@ -1218,8 +1218,8 @@ and `charging=` as the battery status, the settings the camera writes
 date) read back where the firmware reads them, and success to the rest.
 A connect command (`wifi_connect` in the camera's `mcu_test`) joins the
 `ssid` network the way the IoT firmware's join does. The driver reads no
-chip version, and the RHEA family's 0xb1 is assumed for it; the SDIO ID
-is the 6441's, which its driver accepts along with every other.
+chip version; the model has a stock 6461's, 0xb3. The SDIO ID is the
+6441's, which its driver accepts along with every other.
 
 The RTL8192FS's efuse holds the device's `mac`; its driver turns down a
 locally administered address, QEMU's default 52:54:00 one among them,

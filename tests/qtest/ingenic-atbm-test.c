@@ -260,14 +260,14 @@ static void test_ids(const void *data)
     qtest_quit(qts);
 }
 
-/* The 6461: the RHEA family's chip version, assumed from the open driver */
+/* The 6461: a stock chip's version, 0xb3 */
 static void test_ids_6461(const void *data)
 {
     QTestState *qts = qtest_init("-machine ingenic-t41 "
                                  "-device atbm6461,bus=msc0");
 
     sdio_enumerate(qts);
-    g_assert_cmphex(chip_read(qts, CHIP_VERSION) & 0xff, ==, 0xb1);
+    g_assert_cmphex(chip_read(qts, CHIP_VERSION) & 0xff, ==, 0xb3);
     qtest_quit(qts);
 }
 

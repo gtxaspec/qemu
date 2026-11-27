@@ -127,7 +127,8 @@ static const struct {
 } mac_ready[] = {
     { 0x0a500a20, 0x80000000 },     /* the LMAC init waits for bit 31 */
     { 0x0ac3899c, 0x1 },            /* the TX calibration's done flag */
-    { 0x0acc017c, 0xb1 },           /* the chip version, 6461 */
+    /* the chip version: a stock 6461 reads 0xb3 (AT+rmem 0acc017c) */
+    { 0x0acc017c, 0xb3 },
 };
 
 /* and bits it waits to see clear */
