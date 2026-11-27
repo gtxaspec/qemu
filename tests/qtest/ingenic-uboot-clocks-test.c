@@ -330,9 +330,23 @@ static void test_t31x_rates(void)
  * T32 Pro and CW080: the PRJ009 U-Boot's PLLs (the MPLL's dividers stored
  * less one), CPCCR and the divider rates the kernel's clock tree reads
  */
+typedef struct {
+    const char *variant;
+    uint32_t cpccr, ddrcdr, msc0cdr;
+    unsigned mpll;
+} ProCase;
+
+static const ProCase pro_cases[] = {
+    { "t32provn", 0x9a0b5510, 0xa0000001, 0x6000c02a, 1066 },
+    { "cw080snp", 0x9a0b5510, 0xa0000001, 0x6000c02a, 1066 },
+    { "t32prozl", 0x9a0d6610, 0xa0000003, 0x6000c035, 1334 },
+    { "t32proa", 0x9a0d6610, 0xa0000003, 0x6000c035, 1334 },
+};
+
 static void test_pro(const void *data)
 {
-    const char *variant = data;
+    const ProCase *c = data;
+    const char *variant = c->variant;
     g_autofree char *kernel = make_uimage();
     QTestState *qts = qtest_initf("-machine ingenic-t32 "
                                   "-global ingenic-t31.soc-variant=%s "
@@ -345,16 +359,16 @@ static void test_pro(const void *data)
                     ((mp >> 14 & 0x3f) * ((mp >> 11 & 7) + 1) *
                      ((mp >> 8 & 7) + 1));
 
-    g_assert_cmphex(cc, ==, 0x9a0b5510);
+    g_assert_cmphex(cc, ==, c->cpccr);
     g_assert_cmpuint(apll, ==, 1200);
-    g_assert_cmpuint(mpll, ==, 1066);
+    g_assert_cmpuint(mpll, ==, c->mpll);
     g_assert_cmpuint(pll_mhz(vp), ==, 1080);
     g_assert_cmpuint(apll / ((cc & 0xf) + 1), ==, 1200);
     g_assert_cmpuint(mpll / ((cc >> 8 & 0xf) + 1), <=, 200);
     g_assert_cmpuint(mpll / ((cc >> 12 & 0xf) + 1), <=, 200);
     g_assert_cmpuint(mpll / ((cc >> 16 & 0xf) + 1), <=, 100);
-    g_assert_cmphex(qtest_readl(qts, CPM + DDRCDR), ==, 0xa0000001);
-    g_assert_cmphex(qtest_readl(qts, CPM + MSC0CDR), ==, 0x6000c02a);
+    g_assert_cmphex(qtest_readl(qts, CPM + DDRCDR), ==, c->ddrcdr);
+    g_assert_cmphex(qtest_readl(qts, CPM + MSC0CDR), ==, c->msc0cdr);
     qtest_quit(qts);
     unlink(kernel);
 }
@@ -374,9 +388,12 @@ int main(int argc, char **argv)
 
         qtest_add_data_func(name, &cases2[i], test_xb2);
     }
-    qtest_add_data_func("ingenic-uboot-clocks/t32provn", "t32provn", test_pro);
-    qtest_add_data_func("ingenic-uboot-clocks/t32prozl", "t32prozl", test_pro);
-    qtest_add_data_func("ingenic-uboot-clocks/cw080snp", "cw080snp", test_pro);
+    for (int i = 0; i < ARRAY_SIZE(pro_cases); i++) {
+        g_autofree char *name = g_strdup_printf("ingenic-uboot-clocks/%s",
+                                                pro_cases[i].variant);
+
+        qtest_add_data_func(name, &pro_cases[i], test_pro);
+    }
     qtest_add_func("ingenic-uboot-clocks/silicon-reads", test_silicon_reads);
     qtest_add_func("ingenic-uboot-clocks/flash-boot", test_flash);
     qtest_add_func("ingenic-uboot-clocks/t31x-rates", test_t31x_rates);

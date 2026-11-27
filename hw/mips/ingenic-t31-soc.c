@@ -259,13 +259,13 @@ static const T31Variant t31_variants[] = {
      * dividers are stored less one. libimp gives the T32Pro-A no DDR size.
      */
     { "t32prozl", 0x10032005, 0x55550000, 0, MNOD(100, 1, 2, 1),
-      MNOD(533, 6, 1, 0), 64, 32, 128 }, /* 1200/1066 */
+      MNOD(667, 6, 1, 0), 64, 32, 128 }, /* 1200/1334 */
     { "t32prozn", 0x10032005, 0x77770000, 0, MNOD(100, 1, 2, 1),
       MNOD(533, 6, 1, 0), 128, 32, 128 }, /* 1200/1066 */
     { "t32prozx", 0x10032005, 0x66660000, 0, MNOD(100, 1, 2, 1),
       MNOD(533, 6, 1, 0), 256, 32, 128 }, /* 1200/1066 */
     { "t32provl", 0x10032005, 0xCCCC0000, 0, MNOD(100, 1, 2, 1),
-      MNOD(533, 6, 1, 0), 64, 32, 128 }, /* 1200/1066 */
+      MNOD(667, 6, 1, 0), 64, 32, 128 }, /* 1200/1334 */
     { "t32provn", 0x10032005, 0xDDDD0000, 0, MNOD(100, 1, 2, 1),
       MNOD(533, 6, 1, 0), 128, 32, 128 }, /* 1200/1066 */
     { "t32provx", 0x10032005, 0xFFFF0000, 0, MNOD(100, 1, 2, 1),
@@ -273,7 +273,7 @@ static const T31Variant t31_variants[] = {
     { "t32provnp", 0x10032005, 0xBBBB0000, 0, MNOD(100, 1, 2, 1),
       MNOD(533, 6, 1, 0), 128, 32, 128 }, /* 1200/1066 */
     { "t32proa", 0x10032005, 0x44440000, 0, MNOD(100, 1, 2, 1),
-      MNOD(533, 6, 1, 0), 128, 32, 128 }, /* 1200/1066 */
+      MNOD(667, 6, 1, 0), 128, 32, 128 }, /* 1200/1334 */
     { "cw080sn", 0x10032005, 0x01110000, 0, MNOD(100, 1, 2, 1),
       MNOD(533, 6, 1, 0), 128, 32, 128 }, /* 1200/1066 */
     { "cw080snp", 0x10032005, 0x02220000, 0, MNOD(100, 1, 2, 1),
@@ -467,20 +467,25 @@ static const T31UbootClocks t31_uboot_clocks[] = {
      */
     /*
      * T32 Pro and CW080 (PRJ009, PRJ010), source: the SDK 2.1.0
-     * uboot-2022.10 PRJ tree (configs/PRJ009_zn_goat_sfcnor_defconfig,
-     * include/configs/PRJ.h, tools/ingenic-tools/pll_params_creator and
-     * arch/mips/mach-xburst/PRJ/pllsetting.c), which the legacy uboot/
-     * pll.c agrees with: APLL 1200 drives the CPU (CDIV 1, L2 /2), MPLL
-     * 1066 the buses and the DDR, whose clock is half the 1066 MT/s. The
-     * AHB0 and AHB2 buses stay at or under 200 MHz (MPLL / 6) and PCLK is
-     * their /2 (MPLL / 12). The MSC0 and SFC0 dividers follow the rule of
-     * the T32 rows above. The ZL, VL and A U-Boots take a 667 MT/s DDR and
-     * so a 1334 MHz MPLL, which the variant table does not carry: they
-     * share this row, and the PLL words stay the variant's.
+     * uboot-2022.10 PRJ tree (configs/PRJ009_*_goat_sfcnor_defconfig,
+     * include/configs/PRJ.h lines 12-23, tools/ingenic-tools/
+     * pll_params_creator and arch/mips/mach-xburst/PRJ/pllsetting.c), which
+     * the legacy uboot/ pll.c agrees with: APLL 1200 drives the CPU (CDIV 1,
+     * L2 /2), the MPLL the buses and the DDR, whose clock is half the MT/s.
+     * AHB0 and AHB2 stay at or under 200 MHz and PCLK is their /2. The
+     * MSC0 and SFC0 dividers were not read from a U-Boot: they follow the
+     * 25 MHz rule of the T32 rows above.
+     * The ZN, ZX, VN, VX, VNP (1066 MT/s DDR3) and CW080 take MPLL 1066
      */
-    { "t32prozl t32prozn t32prozx t32provl t32provn t32provx t32provnp "
-      "t32proa cw080sn cw080snp", 0, 0, 0x9a0b5510, 0xa0000001,
+    { "t32prozn t32prozx t32provn t32provx t32provnp cw080sn cw080snp",
+      0, 0, 0x9a0b5510, 0xa0000001,
       0x20000000, 0x6000c02a, 0, T32_PARKS(0x60000114) },
+    /*
+     * The ZL and VL (DDR2 667 MT/s) and the A (its defconfig's 667) take
+     * MPLL 1334: AHB 190.6, PCLK 95.3 and the DDR 333.5 MHz
+     */
+    { "t32prozl t32provl t32proa", 0, 0, 0x9a0d6610, 0xa0000003,
+      0x20000000, 0x6000c035, 0, T32_PARKS(0x6000011a) },
     { "t33n t33a", 0x1db0e1c9, 0x04b051c9, 0x9a052210, 0xa0000001 },
     { "t33l t33dl", 0x1db0e1c9, 0x145099c9, 0x9a094410, 0xa0000003 },
     { "t33zl t33vl", 0x1290a1c9, 0x113099c9, 0x9a073310, 0xa0000003 },
