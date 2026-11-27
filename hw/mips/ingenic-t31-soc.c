@@ -465,6 +465,22 @@ static const T31UbootClocks t31_uboot_clocks[] = {
      * T33, source: the PLL words, CPCCR and the DDR divider the SPL writes
      * (its bit 7 and 6 set), by the DDR bin of the grade
      */
+    /*
+     * T32 Pro and CW080 (PRJ009, PRJ010), source: the SDK 2.1.0
+     * uboot-2022.10 PRJ tree (configs/PRJ009_zn_goat_sfcnor_defconfig,
+     * include/configs/PRJ.h, tools/ingenic-tools/pll_params_creator and
+     * arch/mips/mach-xburst/PRJ/pllsetting.c), which the legacy uboot/
+     * pll.c agrees with: APLL 1200 drives the CPU (CDIV 1, L2 /2), MPLL
+     * 1066 the buses and the DDR, whose clock is half the 1066 MT/s. The
+     * AHB0 and AHB2 buses stay at or under 200 MHz (MPLL / 6) and PCLK is
+     * their /2 (MPLL / 12). The MSC0 and SFC0 dividers follow the rule of
+     * the T32 rows above. The ZL, VL and A U-Boots take a 667 MT/s DDR and
+     * so a 1334 MHz MPLL, which the variant table does not carry: they
+     * share this row, and the PLL words stay the variant's.
+     */
+    { "t32prozl t32prozn t32prozx t32provl t32provn t32provx t32provnp "
+      "t32proa cw080sn cw080snp", 0, 0, 0x9a0b5510, 0xa0000001,
+      0x20000000, 0x6000c02a, 0, T32_PARKS(0x60000114) },
     { "t33n t33a", 0x1db0e1c9, 0x04b051c9, 0x9a052210, 0xa0000001 },
     { "t33l t33dl", 0x1db0e1c9, 0x145099c9, 0x9a094410, 0xa0000003 },
     { "t33zl t33vl", 0x1290a1c9, 0x113099c9, 0x9a073310, 0xa0000003 },
@@ -586,7 +602,10 @@ static void ingenic_t31_cpm_resets(DeviceState *cpm, const T31Variant *v,
         break;
     case 0x0032:
         if (v->cpuid == T32PRO_CPUID) {
-            return;     /* not measured, nor the T33's */
+            /* its reset values are not measured, only U-Boot's writes */
+            r = t32;
+            n = 0;
+            break;
         }
         r = t32;
         n = ARRAY_SIZE(t32);
@@ -720,6 +739,9 @@ Clock *ingenic_t31_cpu_clock(IngenicT31State *s)
             if (v->cpuid != T32PRO_CPUID) {
                 qdev_prop_set_uint32(cpm, "vpll",
                                      kernel ? 0x0c60910d : 0x010049c0);
+            } else if (kernel) {
+                /* VPLL 1080 MHz: M 90, N 1, OD1 2, OD0 1 */
+                qdev_prop_set_uint32(cpm, "vpll", 0x05a0510d);
             }
             break;
         default:
@@ -858,9 +880,9 @@ Clock *ingenic_t31_cpu_clock(IngenicT31State *s)
             qdev_prop_set_uint32(cpm, "clkgr0", gr[0] & ~(1u << 15));
         }
         if (kernel || fam == 0x0033 || v->cpuid == T32PRO_CPUID) {
-            qdev_prop_set_uint32(cpm, "apll", u ? u->apll : v->apll);
+            qdev_prop_set_uint32(cpm, "apll", u && u->apll ? u->apll : v->apll);
             qdev_prop_set_uint32(cpm, "apll-frac", v->apll_frac);
-            qdev_prop_set_uint32(cpm, "mpll", u ? u->mpll : v->mpll);
+            qdev_prop_set_uint32(cpm, "mpll", u && u->mpll ? u->mpll : v->mpll);
             if (ms->firmware) {
                 qdev_prop_set_uint32(cpm, "cpccr", 0x55800000);
             }

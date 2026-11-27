@@ -326,6 +326,39 @@ static void test_t31x_rates(void)
     unlink(kernel);
 }
 
+/*
+ * T32 Pro and CW080: the PRJ009 U-Boot's PLLs (the MPLL's dividers stored
+ * less one), CPCCR and the divider rates the kernel's clock tree reads
+ */
+static void test_pro(const void *data)
+{
+    const char *variant = data;
+    g_autofree char *kernel = make_uimage();
+    QTestState *qts = qtest_initf("-machine ingenic-t32 "
+                                  "-global ingenic-t31.soc-variant=%s "
+                                  "-kernel %s", variant, kernel);
+    uint32_t cc = qtest_readl(qts, CPM + CPCCR);
+    uint32_t mp = qtest_readl(qts, CPM + CPMPCR);
+    uint32_t vp = qtest_readl(qts, CPM + CPVPCR);
+    unsigned apll = pll_mhz(qtest_readl(qts, CPM + CPAPCR));
+    unsigned mpll = 24 * (mp >> 20 & 0xfff) /
+                    ((mp >> 14 & 0x3f) * ((mp >> 11 & 7) + 1) *
+                     ((mp >> 8 & 7) + 1));
+
+    g_assert_cmphex(cc, ==, 0x9a0b5510);
+    g_assert_cmpuint(apll, ==, 1200);
+    g_assert_cmpuint(mpll, ==, 1066);
+    g_assert_cmpuint(pll_mhz(vp), ==, 1080);
+    g_assert_cmpuint(apll / ((cc & 0xf) + 1), ==, 1200);
+    g_assert_cmpuint(mpll / ((cc >> 8 & 0xf) + 1), <=, 200);
+    g_assert_cmpuint(mpll / ((cc >> 12 & 0xf) + 1), <=, 200);
+    g_assert_cmpuint(mpll / ((cc >> 16 & 0xf) + 1), <=, 100);
+    g_assert_cmphex(qtest_readl(qts, CPM + DDRCDR), ==, 0xa0000001);
+    g_assert_cmphex(qtest_readl(qts, CPM + MSC0CDR), ==, 0x6000c02a);
+    qtest_quit(qts);
+    unlink(kernel);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -341,6 +374,9 @@ int main(int argc, char **argv)
 
         qtest_add_data_func(name, &cases2[i], test_xb2);
     }
+    qtest_add_data_func("ingenic-uboot-clocks/t32provn", "t32provn", test_pro);
+    qtest_add_data_func("ingenic-uboot-clocks/t32prozl", "t32prozl", test_pro);
+    qtest_add_data_func("ingenic-uboot-clocks/cw080snp", "cw080snp", test_pro);
     qtest_add_func("ingenic-uboot-clocks/silicon-reads", test_silicon_reads);
     qtest_add_func("ingenic-uboot-clocks/flash-boot", test_flash);
     qtest_add_func("ingenic-uboot-clocks/t31x-rates", test_t31x_rates);
