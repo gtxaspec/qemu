@@ -221,6 +221,22 @@ The chip's first word after it starts is not acted on in any mode. A
 camera or a chip of an older build ignores or is not sent the message
 (it is sent only to a card that says in its hello that it takes it).
 
+The chip sleeps the way its SDK has it sleep: the firmware's idle hook
+puts it in light sleep (the CPU and the timers off, the memories, the
+GPIOs and the Wi-Fi association kept) until an RTC alarm, a wake pin or
+a frame for it wakes it, and it then resumes through its own retention
+code; ``AT+DEEP_SLEEP`` powers it down to boot again through the ROM and
+its bootloader. A sleeping chip uses next to no host CPU. With the
+stand-in lower MAC the port holds what the access point sends while the
+chip sleeps and wakes it for a data frame. ``-machine pir-pad=<pad>``
+gives the chip a PIR on that pad, whose level is the machine's ``pir``
+property (``qom-set /machine pir true``); ``charger-pad`` and ``charger``
+are the same for a charger's detect line. On the camera's card,
+``host-power-pad=<pad>`` makes that chip pad the camera's power switch,
+as the SDK's SDIO demo can use its pad 25: low stops the camera, high
+boots it again. The power controller's registers, and what is
+inferred about them, are described in ``hw/misc/atbm-hera-smu.c``.
+
 Example - boot a flash image::
 
    qemu-system-mipsel -M ingenic-t31 -m 256M -display none \
