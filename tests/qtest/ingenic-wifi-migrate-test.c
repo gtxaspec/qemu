@@ -140,7 +140,7 @@ int main(int argc, char **argv)
     static const char *const cards[] = {
         "atbm6031", "atbm6062s", "atbm6162s", "aic8800d80-sdio",
         "aic8800d40l-sdio", "ssv6158", "rtl8189fs", "rtl8189es",
-        "rtl8192fs", "bcm43438", "hi3881",
+        "rtl8192fs", "bcm43438", "bcm43362", "hi3881",
     };
 
     g_test_init(&argc, &argv, NULL);

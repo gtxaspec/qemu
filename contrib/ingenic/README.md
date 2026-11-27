@@ -1176,6 +1176,7 @@ OTG port, with `port=1` so no hub comes between:
 | `rtl8188eu` | USB | rtl8188eus (cameras named rtl8188eu, rtl8188eus) |
 | `rtl8733bu` | USB | rtl8733bu (cameras named rtl8131bu, rtl8731, rtl8731bu) |
 | `bcm43438`, `bcm43436` | SDIO | syn4343 (the A1 and B0 parts; the driver picks the firmware by revision) |
+| `bcm43362` | SDIO | the AP6181's chip, with the in-tree brcmfmac (firmware brcmfmac43362-sdio) |
 | `hi3881` | SDIO | hi3881 (its access point is ap0) |
 | `ssv6155p` | USB | ssv6x5x with SV6155P or SV6256P (cameras named ssv6155, ssv6155p, ssv6256p) |
 | `ssv6158` | SDIO | ssv6158 |
@@ -1228,9 +1229,11 @@ dual-band, no Bluetooth.
 
 The Broadcom parts are FullMAC: the model plays their firmware, joining
 the access point itself and leaving the 4-way handshake to the camera's
-supplicant. They signal on a GPIO of their own and are powered from
-another, `host-wake-pin` and `reg-on-pin` on the SoC's GPIO controller,
-39 and 48 by default as thingino's syn4343 package has them.
+supplicant. They ask for service on the SDIO card interrupt, or, once
+the driver sets CCCR 0xf2, on a GPIO of their own, and are powered from
+another: `host-wake-pin` and `reg-on-pin` on the SoC's GPIO controller,
+39 and 48 by default as thingino's syn4343 package has them (-1 leaves
+a pin unwired).
 
 The SSV6355 is FullMAC too, its firmware played the same way; for an
 access point of its own the camera answers the management frames.
