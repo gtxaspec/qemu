@@ -21,12 +21,14 @@
  * protect bits are kept and not enforced.
  *
  * The array is a RAM region, which the board maps for execute-in-place
- * reads. "drive" is the flash image (written back on a program or an
- * erase); without one the array starts erased (0xff). A real part keeps
- * what the firmware writes across a reset; "restore-on-reset" puts the
- * array back as it was loaded at every reset, for runs that must boot the
- * same way each time (the firmware saves its configuration here, and the
- * next boot takes another path).
+ * reads; output "powered-down" is high from b9 to ab (or a reset), when a
+ * real part answers nothing, so the board takes the XIP windows away.
+ * "drive" is the flash image (written back on a program or an erase);
+ * without one the array starts erased (0xff). A real part keeps what the
+ * firmware writes across a reset; "restore-on-reset" puts the array back
+ * as it was loaded at every reset, for runs that must boot the same way
+ * each time (the firmware saves its configuration here, and the next boot
+ * takes another path).
  *
  * Copyright (C) 2026 Alfonso Gamboa <gtxent@gmail.com>
  *
@@ -38,6 +40,7 @@
 #include "qemu/log.h"
 #include "qemu/module.h"
 #include "qemu/timer.h"
+#include "hw/core/irq.h"
 #include "qemu/units.h"
 #include "hw/block/atbm-hera-nor.h"
 #include "hw/core/qdev-properties.h"
@@ -208,11 +211,13 @@ static void nor_start(AtbmHeraNorState *s, uint8_t cmd)
         break;
     case 0xab:
         s->deep_pd = false;
+        qemu_set_irq(s->powered_down, 0);
         s->state = CMD_RES;
         s->naddr = 0;
         break;
     case 0xb9:
         s->deep_pd = true;
+        qemu_set_irq(s->powered_down, 1);
         break;
     case 0x06:
         s->sr1 |= SR1_WEL;
@@ -354,6 +359,8 @@ static void nor_realize(SSIPeripheral *dev, Error **errp)
         error_setg(errp, "the flash size must be 2 or 4 MiB");
         return;
     }
+    qdev_init_gpio_out_named(DEVICE(dev), &s->powered_down, "powered-down",
+                             1);
     if (!s->jedec_id) {
         s->jedec_id = s->size == 2 * MiB ? 0xc84015 : 0xc84016;
     }
@@ -394,6 +401,7 @@ static void nor_reset_hold(Object *obj, ResetType type)
     s->op = 0;
     s->state = CMD_NONE;
     s->deep_pd = false;
+    qemu_set_irq(s->powered_down, 0);
     s->wsr_volatile = false;
     timer_del(s->timer);
     if (s->pristine && memcmp(s->data, s->pristine, s->size)) {

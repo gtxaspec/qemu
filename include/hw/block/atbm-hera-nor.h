@@ -47,6 +47,7 @@ struct AtbmHeraNorState {
     uint32_t prog_lo;
     uint32_t prog_hi;
     bool deep_pd;
+    qemu_irq powered_down;
     bool wsr_volatile;
 };
 
