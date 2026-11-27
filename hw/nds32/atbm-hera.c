@@ -49,6 +49,8 @@
 #include "qemu/error-report.h"
 #include "qemu/log.h"
 #include "qapi/error.h"
+#include "qapi/visitor.h"
+#include "qapi/qapi-builtin-type-infos.h"
 #include "elf.h"
 #include "hw/core/boards.h"
 #include "target/nds32/cpu.h"
@@ -92,6 +94,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(AtbmHeraIntSink, ATBM_HERA_INTSINK)
 #define FLASH_BOOT_LEN  0x10000
 #define BOOTWIN_BASE    0x01400000
 #define BOOTWIN_OFFSET  0x1000
+#define SMU_BASE        0x16100000
+#define SMU_BOOT_RST    (SMU_BASE + 0x102c)
 
 /* boot_config, flash 0: IOT_spec "boot_config" */
 #define BOOTCFG_VALID       0xab45
@@ -103,6 +107,11 @@ OBJECT_DECLARE_SIMPLE_TYPE(AtbmHeraIntSink, ATBM_HERA_INTSINK)
  * watchdogs' interrupt is the CPU's NMI, one more sink input
  */
 #define N_INTS          32
+
+/* The pads the power controller's wake ids 0..15 watch (gpio.h) */
+static const uint8_t wake_pad[] = {
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 16, 17, 18, 19, 24, 25,
+};
 #define NMI_IN          N_INTS
 
 /*
@@ -174,6 +183,15 @@ struct AtbmHeraMachine {
     qemu_irq *ctl;
     qemu_irq chip_reset;        /* tells the link that the chip restarts */
     uint64_t hif_port;
+    DeviceState *smu;
+    /* what the light sleep powers off: the PITs, the watchdogs */
+    DeviceState *core_dom[5];
+    int n_core_dom;
+    DeviceState *gpio;
+    int32_t pir_pad;
+    int32_t charger_pad;
+    bool pir;
+    bool charger;
     bool wire_cpu;
     bool flash_boot;
     bool rom_stopped;
@@ -298,6 +316,41 @@ static bool atbm_hera_has_in(DeviceState *dev, const char *name, int n)
     return false;
 }
 
+/* Whether the device has a named gpio output list */
+static bool atbm_hera_has_out(DeviceState *dev, const char *name)
+{
+    NamedGPIOList *ngl;
+
+    QLIST_FOREACH(ngl, &dev->gpios, node) {
+        if (!g_strcmp0(ngl->name, name)) {
+            return ngl->num_out > 0;
+        }
+    }
+    return false;
+}
+
+/*
+ * The flash in deep power down answers nothing: what reads its XIP
+ * windows then finds no memory there (the firmware releases it, with
+ * 0xab, before it runs from it again)
+ */
+static void atbm_hera_flash_pd(void *opaque, int n, int level)
+{
+    AtbmHeraMachine *m = opaque;
+
+    memory_region_set_enabled(&m->flash_cached, !level);
+    memory_region_set_enabled(&m->flash_uncached, !level);
+    memory_region_set_enabled(&m->flash_bootwin, !level);
+}
+
+/* A pad the board drives: the PIR's output, the charger's detect line */
+static void atbm_hera_drive_pad(AtbmHeraMachine *m, int pad, bool level)
+{
+    if (pad >= 0 && pad < 28) {
+        qemu_set_irq(qdev_get_gpio_in_named(m->gpio, "pin", pad), level);
+    }
+}
+
 /*
  * Chip interrupt n is the CPU's "IRQ" input n and the watchdogs' NMI its
  * "NMI" input, for a CPU that has them (the nds32 one does); another
@@ -313,6 +366,11 @@ static void atbm_hera_wire_cpu(AtbmHeraMachine *m)
     for (int i = 0; i < N_INTS; i++) {
         qdev_connect_gpio_out_named(DEVICE(m->ints), "int", i,
                                     qdev_get_gpio_in_named(cpu, "IRQ", i));
+    }
+    if (atbm_hera_has_out(cpu, "standby")) {
+        qdev_connect_gpio_out_named(cpu, "standby", 0,
+                                    qdev_get_gpio_in_named(m->smu, "standby",
+                                                           0));
     }
     if (atbm_hera_has_in(cpu, "NMI", 1)) {
         qdev_connect_gpio_out_named(DEVICE(m->ints), "nmi", 0,
@@ -367,12 +425,23 @@ fail:
 
 /*
  * The CPU's reset puts its program counter at the ELF's entry, or, booting
- * from the flash, runs the ROM stand-in
+ * from the flash, runs the ROM stand-in; but where the power controller's
+ * BOOT_RST[31:16] names another address than the ROM's, there (the core
+ * waking from a light sleep boots from its ILM, which the firmware puts
+ * there first: atbm-hera-smu.c)
  */
 static void atbm_hera_cpu_restart(AtbmHeraMachine *m)
 {
+    uint32_t boot = 0;
+
     cpu_reset(m->cpu);
-    if (m->flash_boot) {
+    address_space_read(&address_space_memory, SMU_BOOT_RST,
+                       MEMTXATTRS_UNSPECIFIED, &boot, sizeof(boot));
+    boot = le32_to_cpu(boot);
+    boot &= 0xffff0000;
+    if (boot && boot != ROM_BASE) {
+        cpu_set_pc(m->cpu, boot);
+    } else if (m->flash_boot) {
         atbm_hera_rom_boot(m);
     } else if (m->entry) {
         cpu_set_pc(m->cpu, m->entry);
@@ -420,13 +489,15 @@ static void atbm_hera_cpu_reset(void *opaque)
  * 3 is the camera SoC's hold (the chip off or its reset pin, from the
  * link) and 4 the power-up that follows it, a reset of every device. 5 is
  * the watchdogs' last stage, which resets the machine: the link tells the
- * SoC first.
+ * SoC first. 6 is the power controller's sleep: it holds the core while
+ * the chip sleeps and restarts it on the wake, like 0.
  */
 
 static void atbm_hera_ctl(void *opaque, int n, int level)
 {
     AtbmHeraMachine *m = opaque;
     uint32_t was = m->held;
+
 
     if (n == 2) {
         if (level && !was) {
@@ -453,6 +524,39 @@ static void atbm_hera_ctl(void *opaque, int n, int level)
     } else if (was && !m->held) {
         atbm_hera_restart_later(m);
         cpu_resume(m->cpu);
+    }
+}
+
+/*
+ * The chip's sleep holds the core and cuts the power of the timers and
+ * watchdogs, which come back in their reset state: the firmware's resume
+ * relies on the PIT's microsecond count running from reset before it sets
+ * the timers up again. The UARTs are kept (on silicon they lose their
+ * power too, and what comes in during a sleep is lost: here a console
+ * line typed then is still read after the wake). GPIO, RTC, the power
+ * controller, the memories and the Wi-Fi port keep their state.
+ */
+static void atbm_hera_sleep(void *opaque, int n, int level)
+{
+    AtbmHeraMachine *m = opaque;
+
+    /* off while it sleeps, and fresh from their reset on the wake */
+    for (int i = 0; i < m->n_core_dom; i++) {
+        device_cold_reset(m->core_dom[i]);
+    }
+    /*
+     * The core stays in the standby it went to sleep in (so it counts as
+     * idle, and -icount's clock runs on to the wake) and restarts on the
+     * wake. A core without the line is held like line 0 holds it.
+     */
+    if (atbm_hera_has_in(DEVICE(m->cpu), "power-hold", 1)) {
+        if (!level) {
+            atbm_hera_restart_later(m);
+        }
+        qemu_set_irq(qdev_get_gpio_in_named(DEVICE(m->cpu), "power-hold", 0),
+                     level);
+    } else {
+        atbm_hera_ctl(m, 6, level);
     }
 }
 
@@ -563,7 +667,8 @@ static void atbm_hera_init(MachineState *machine)
     atbm_hera_dev(m, "atbm-hera-uart", "uart1", 0x16200000, 19, chr0);
     atbm_hera_dev(m, "atbm-hera-uart", "uart2", 0x16300000, 20, chr1);
     atbm_hera_dev(m, "atbm-hera-uart", "uart3", 0x17600000, 31, serial_hd(2));
-    atbm_hera_dev(m, "atbm-hera-pit", "pit1", 0x16400000, 18, NULL);
+    m->core_dom[m->n_core_dom++] = atbm_hera_dev(m, "atbm-hera-pit", "pit1",
+                                                 0x16400000, 18, NULL);
     /*
      * PIT2 and PIT3 share an interrupt: the lib's handler for 17 and 18
      * is one routine that polls all three PITs (assumption: the 3rd PIT
@@ -571,9 +676,11 @@ static void atbm_hera_init(MachineState *machine)
      */
     m->pit_or = atbm_hera_or(m, "pit-or", 2, 17);
     dev = atbm_hera_dev(m, "atbm-hera-pit", "pit2", 0x16500000, -1, NULL);
+    m->core_dom[m->n_core_dom++] = dev;
     sysbus_connect_irq(SYS_BUS_DEVICE(dev), 0,
                        qdev_get_gpio_in(m->pit_or, 0));
     dev = atbm_hera_dev(m, "atbm-hera-pit", "pit3", 0x17000000, -1, NULL);
+    m->core_dom[m->n_core_dom++] = dev;
     sysbus_connect_irq(SYS_BUS_DEVICE(dev), 0,
                        qdev_get_gpio_in(m->pit_or, 1));
 
@@ -602,7 +709,7 @@ static void atbm_hera_init(MachineState *machine)
                                 qdev_get_gpio_in_named(dmac, "req", 8));
     qdev_connect_gpio_out_named(dev, "dreq-rx", 0,
                                 qdev_get_gpio_in_named(dmac, "req", 9));
-    m->ctl = qemu_allocate_irqs(atbm_hera_ctl, m, 6);
+    m->ctl = qemu_allocate_irqs(atbm_hera_ctl, m, 7);
     dev = atbm_hera_dev(m, "atbm-hera-hif", "hif", 0x0ab00000, 10, NULL);
     hif = dev;
     qdev_connect_gpio_out_named(dev, "cpu-reset", 0, m->ctl[1]);
@@ -610,26 +717,39 @@ static void atbm_hera_init(MachineState *machine)
         sysbus_mmio_map(SYS_BUS_DEVICE(dev), 1, m->hif_port);
     }
     atbm_hera_dev(m, "atbm-hera-i2c", "i2c", 0x16900000, 22, NULL);
-    dev = atbm_hera_dev(m, "atbm-hera-smu", "smu", 0x16100000, 28, NULL);
-    qdev_connect_gpio_out_named(dev, "cpu-hold", 0, m->ctl[0]);
-    atbm_hera_connect(m, dev, 1, 30);
-    dev = atbm_hera_dev(m, "atbm-hera-gpio", "gpio", 0x16800000, 23, NULL);
-    sysbus_mmio_map(SYS_BUS_DEVICE(dev), 1, 0x17400000);
-    atbm_hera_link(m, hif, dev);
+    m->smu = atbm_hera_dev(m, "atbm-hera-smu", "smu", SMU_BASE, 28, NULL);
+    qdev_connect_gpio_out_named(m->smu, "cpu-hold", 0, m->ctl[0]);
+    atbm_hera_connect(m, m->smu, 1, 30);
+    m->gpio = atbm_hera_dev(m, "atbm-hera-gpio", "gpio", 0x16800000, 23,
+                            NULL);
+    sysbus_mmio_map(SYS_BUS_DEVICE(m->gpio), 1, 0x17400000);
+    for (int i = 0; i < ARRAY_SIZE(wake_pad); i++) {
+        qdev_connect_gpio_out_named(m->gpio, "level", wake_pad[i],
+                                    qdev_get_gpio_in_named(m->smu, "wake", i));
+    }
+    atbm_hera_link(m, hif, m->gpio);
     dev = atbm_hera_dev(m, "atbm-hera-rtc", "rtc1", 0x16700000, 25, NULL);
     atbm_hera_connect(m, dev, 1, 26);
+    qdev_connect_gpio_out_named(dev, "wake", 0,
+                                qdev_get_gpio_in_named(m->smu, "rtc-wake", 0));
     dev = atbm_hera_dev(m, "atbm-hera-rtc", "rtc2", 0x17100000, 15, NULL);
     atbm_hera_connect(m, dev, 1, 16);
+    qdev_connect_gpio_out_named(dev, "wake", 0,
+                                qdev_get_gpio_in_named(m->smu, "rtc-wake", 1));
 
     m->nmi_or = atbm_hera_or(m, "nmi-or", 2, NMI_IN);
     dev = atbm_hera_dev(m, "atbm-hera-wdt", "wdt1", 0x16600000, -1, NULL);
     sysbus_connect_irq(SYS_BUS_DEVICE(dev), 0, qdev_get_gpio_in(m->nmi_or, 0));
     qdev_connect_gpio_out_named(dev, "cpu-reset", 0, m->ctl[2]);
     qdev_connect_gpio_out_named(dev, "all-reset", 0, m->ctl[5]);
+    m->core_dom[m->n_core_dom++] = dev;
     dev = atbm_hera_dev(m, "atbm-hera-wdt", "wdt2", 0x17500000, -1, NULL);
     sysbus_connect_irq(SYS_BUS_DEVICE(dev), 0, qdev_get_gpio_in(m->nmi_or, 1));
     qdev_connect_gpio_out_named(dev, "cpu-reset", 0, m->ctl[2]);
     qdev_connect_gpio_out_named(dev, "all-reset", 0, m->ctl[5]);
+    m->core_dom[m->n_core_dom++] = dev;
+    qdev_connect_gpio_out_named(m->smu, "sleep", 0,
+                                qemu_allocate_irq(atbm_hera_sleep, m, 0));
 
     /*
      * The Wi-Fi MAC and PHY: undocumented, out of scope here (a shim at
@@ -654,10 +774,20 @@ static void atbm_hera_init(MachineState *machine)
     sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
     sysbus_mmio_map(SYS_BUS_DEVICE(dev), 0, ATBM_HERA_LMAC_BASE);
     atbm_hera_connect(m, dev, 0, ATBM_HERA_LMAC_IRQ);
+    qdev_connect_gpio_out_named(dev, "wake", 0,
+                                qdev_get_gpio_in_named(m->smu, "wlan-wake", 0));
 
     if (machine->cpu_type) {
         m->cpu = CPU(cpu_create(machine->cpu_type));
         atbm_hera_wire_cpu(m);
+    }
+    qdev_connect_gpio_out_named(DEVICE(m->nor), "powered-down", 0,
+                                qemu_allocate_irq(atbm_hera_flash_pd, m, 0));
+    if (m->pir_pad >= 0) {
+        atbm_hera_drive_pad(m, m->pir_pad, m->pir);
+    }
+    if (m->charger_pad >= 0) {
+        atbm_hera_drive_pad(m, m->charger_pad, m->charger);
     }
     if (machine->kernel_filename) {
         atbm_hera_load_elf(m, machine->kernel_filename);
@@ -677,11 +807,87 @@ static void atbm_hera_set_wire(Object *obj, bool value, Error **errp)
     ATBM_HERA_MACHINE(obj)->wire_cpu = value;
 }
 
+static void atbm_hera_set_line(Object *obj, bool value, bool *line, int pad)
+{
+    AtbmHeraMachine *m = ATBM_HERA_MACHINE(obj);
+
+    *line = value;
+    if (m->gpio) {
+        atbm_hera_drive_pad(m, pad, value);
+    }
+}
+
+static void atbm_hera_get_pad(Object *obj, Visitor *v, const char *name,
+                              void *opaque, Error **errp)
+{
+    visit_type_int32(v, name, opaque, errp);
+}
+
+static void atbm_hera_set_pad(Object *obj, Visitor *v, const char *name,
+                              void *opaque, Error **errp)
+{
+    int32_t pad;
+
+    if (!visit_type_int32(v, name, &pad, errp)) {
+        return;
+    }
+    if (pad < -1 || pad >= 28) {
+        error_setg(errp, "%s: a pad is 0..27, or -1 for none", name);
+        return;
+    }
+    *(int32_t *)opaque = pad;
+}
+
+static bool atbm_hera_get_pir(Object *obj, Error **errp)
+{
+    return ATBM_HERA_MACHINE(obj)->pir;
+}
+
+static void atbm_hera_set_pir(Object *obj, bool value, Error **errp)
+{
+    AtbmHeraMachine *m = ATBM_HERA_MACHINE(obj);
+
+    atbm_hera_set_line(obj, value, &m->pir, m->pir_pad);
+}
+
+static bool atbm_hera_get_charger(Object *obj, Error **errp)
+{
+    return ATBM_HERA_MACHINE(obj)->charger;
+}
+
+static void atbm_hera_set_charger(Object *obj, bool value, Error **errp)
+{
+    AtbmHeraMachine *m = ATBM_HERA_MACHINE(obj);
+
+    atbm_hera_set_line(obj, value, &m->charger, m->charger_pad);
+}
+
 static void atbm_hera_instance_init(Object *obj)
 {
     AtbmHeraMachine *m = ATBM_HERA_MACHINE(obj);
 
     m->wire_cpu = true;
+    m->pir_pad = -1;
+    m->charger_pad = -1;
+    object_property_add(obj, "pir-pad", "int32", &int32_type_info,
+                        atbm_hera_get_pad, atbm_hera_set_pad, NULL,
+                        &m->pir_pad);
+    object_property_set_description(obj, "pir-pad",
+        "the chip pad a PIR sensor drives (-1: none); the \"pir\" property "
+        "is its level (the SDK's SDIO demo wakes the host from pad 24)");
+    object_property_add_bool(obj, "pir", atbm_hera_get_pir,
+                             atbm_hera_set_pir);
+    object_property_set_description(obj, "pir",
+        "the PIR's output (qom-set /machine pir on|off at run time)");
+    object_property_add(obj, "charger-pad", "int32", &int32_type_info,
+                        atbm_hera_get_pad, atbm_hera_set_pad, NULL,
+                        &m->charger_pad);
+    object_property_set_description(obj, "charger-pad",
+        "the chip pad the charger's detect line drives (-1: none)");
+    object_property_add_bool(obj, "charger", atbm_hera_get_charger,
+                             atbm_hera_set_charger);
+    object_property_set_description(obj, "charger",
+        "the charger's detect line: high while charging");
     object_property_add_uint64_ptr(obj, "hif-host-port", &m->hif_port,
                                    OBJ_PROP_FLAG_READWRITE);
     object_property_set_description(obj, "hif-host-port",

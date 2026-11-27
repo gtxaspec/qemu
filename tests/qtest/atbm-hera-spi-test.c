@@ -372,12 +372,17 @@ static void test_deep_power_down(void)
 {
     QTestState *qts = hera_init("");
 
+    g_assert_cmphex(qtest_readl(qts, HERA_FLASH + 0x2000), ==, 0xffffffff);
     cmd_only(qts, 0xb9);
     cmd_only(qts, 0x06);
     g_assert_cmphex(status(qts), ==, 0);
+    /* powered down, the XIP windows show no flash (the board unmaps them) */
+    g_assert_cmphex(qtest_readl(qts, HERA_FLASH + 0x2000), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, HERA_FLASH_NC + 0x2000), ==, 0);
     cmd_only(qts, 0xab);
     cmd_only(qts, 0x06);
     g_assert_cmphex(status(qts), ==, 0x02);
+    g_assert_cmphex(qtest_readl(qts, HERA_FLASH + 0x2000), ==, 0xffffffff);
     qtest_quit(qts);
 }
 

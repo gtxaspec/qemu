@@ -163,6 +163,158 @@ static void test_cpu_hold(void)
     qtest_quit(qts);
 }
 
+/*
+ * The power controller: the sleep request, the core's standby, the wake
+ * sources, deep sleep's timer (atbm-hera-smu.c; the sequences are
+ * pwr_ARESA.o's)
+ */
+#define BOOT_RST    0x102c
+#define DS_CFG      0x10a8
+#define DS_CNT_LO   0x10ac
+#define DS_CNT_HI   0x10b0
+#define CLK_DIV     0x10e4
+#define PWR_BD      0x10fc
+#define CALIB_RES   0x084
+#define BD_LIGHT    0x80000000u
+#define BD_RTC1     (1u << 1)
+#define RTC_MS_CNT  0x04
+#define RTC_MS_NUM  0x0c
+#define RTC_CNTR    0x10
+#define RTC_ALARM   0x14
+#define RTC_EN      0x18
+#define MSEC        1000000LL
+
+static QTestState *power_init(const char *args)
+{
+    QTestState *qts = qtest_initf("-machine atbm-hera%s -cpu " HERA_CPU,
+                                  args);
+
+    qtest_irq_intercept_out_named(qts, "/machine/smu", "sleep");
+    return qts;
+}
+
+static void standby(QTestState *qts)
+{
+    qtest_set_irq_in(qts, "/machine/smu", "standby", 0, 1);
+    qtest_set_irq_in(qts, "/machine/smu", "standby", 0, 0);
+}
+
+/* CPU_RETENTION_FUNC's: the retained flag, the sleep request, the ILM */
+static void light_sleep(QTestState *qts)
+{
+    wr(qts, PWR_BD, BD_LIGHT | BD_RTC1);
+    wr(qts, STRAP, rd(qts, STRAP) | 1);
+    wr(qts, BOOT_RST, HERA_ILM | 3);
+    wr(qts, CPU_CTRL, rd(qts, CPU_CTRL) | 1);
+    standby(qts);
+}
+
+/* PWR_StartRTC: the alarm after t of the RTC's 32.768 kHz "ms" */
+static void rtc_alarm(QTestState *qts, uint32_t t)
+{
+    qtest_writel(qts, HERA_RTC + RTC_MS_CNT, 0);
+    qtest_writel(qts, HERA_RTC + RTC_CNTR, 0);
+    qtest_writel(qts, HERA_RTC + RTC_EN, 0);
+    qtest_writel(qts, HERA_RTC + RTC_ALARM, t / 3600000 << 12 |
+                 t % 3600000 / 60000 << 6 | t % 60000 / 1000);
+    qtest_writel(qts, HERA_RTC + RTC_MS_NUM, t % 1000);
+    qtest_writel(qts, HERA_RTC + RTC_EN, 7);
+}
+
+static void test_standby(void)
+{
+    QTestState *qts = power_init("");
+
+    /* standby alone is the core's own business */
+    wr(qts, PWR_BD, BD_LIGHT | BD_RTC1);
+    standby(qts);
+    g_assert_false(qtest_get_irq(qts, 0));
+    qtest_quit(qts);
+}
+
+static void test_light_rtc(void)
+{
+    QTestState *qts = power_init("");
+
+    /* 100 ms: 3277 ticks */
+    rtc_alarm(qts, 3277 - 1);
+    light_sleep(qts);
+    g_assert_true(qtest_get_irq(qts, 0));
+    qtest_clock_step(qts, 90 * MSEC);
+    g_assert_true(qtest_get_irq(qts, 0));
+    qtest_clock_step(qts, 20 * MSEC);
+    g_assert_false(qtest_get_irq(qts, 0));
+    /* the request is done, the retained flag and the boot address stay */
+    g_assert_cmphex(rd(qts, CPU_CTRL) & 1, ==, 0);
+    g_assert_cmphex(rd(qts, STRAP), ==, 1);
+    g_assert_cmphex(rd(qts, BOOT_RST), ==, HERA_ILM | 3);
+    /* PWR_GetSleepedTime: the count is valid, and as long as the sleep */
+    g_assert_cmphex(qtest_readl(qts, HERA_RTC + RTC_MS_CNT) >> 31, ==, 1);
+    qtest_quit(qts);
+}
+
+static void test_light_rtc_off(void)
+{
+    QTestState *qts = power_init("");
+
+    /* PWR_LightSleep_RTCWakeup(0): the alarm does not wake */
+    rtc_alarm(qts, 3277 - 1);
+    light_sleep(qts);
+    wr(qts, PWR_BD, BD_LIGHT);
+    qtest_clock_step(qts, 500 * MSEC);
+    g_assert_true(qtest_get_irq(qts, 0));
+    qtest_quit(qts);
+}
+
+/* a GPIO wake pin, driven by the board's PIR line on pad 2 (wake id 2) */
+static void test_light_gpio(void)
+{
+    QTestState *qts = power_init(",pir-pad=2");
+
+    wr(qts, WAKE_CFG, 1 << 2);
+    light_sleep(qts);
+    qtest_clock_step(qts, 1000 * MSEC);
+    g_assert_true(qtest_get_irq(qts, 0));
+    qtest_qom_set_bool(qts, "/machine", "pir", true);
+    g_assert_false(qtest_get_irq(qts, 0));
+    g_assert_cmphex(rd(qts, WAKE_ST), ==, 1 << 2);
+
+    /* a wake pin already at its level: the sleep ends at once */
+    light_sleep(qts);
+    g_assert_false(qtest_get_irq(qts, 0));
+    qtest_quit(qts);
+}
+
+/* PWR_GotoDeepSleep(ms): the timer, then a cold boot (a machine reset) */
+static void test_deep(void)
+{
+    QTestState *qts = power_init("");
+    uint64_t v;
+
+    /* the calibration the firmware reads its "cal" from, and div 8 */
+    wr(qts, CALIB_NUM, 1);
+    wr(qts, CALIB_CTRL, 1);
+    g_assert_cmphex(rd(qts, CALIB_RES) >> 5, ==, 1221);
+    wr(qts, CLK_DIV, 3 << 20);
+    /* 500 ms */
+    v = (500ULL * 1221 / 8) >> 5;
+    wr(qts, DS_CNT_LO, v);
+    wr(qts, DS_CNT_HI, v >> 32);
+    wr(qts, DS_CFG, 1 << 10);
+    wr(qts, CPU_CTRL, 1);
+    standby(qts);
+    g_assert_true(qtest_get_irq(qts, 0));
+    qtest_clock_step(qts, 400 * MSEC);
+    g_assert_true(qtest_get_irq(qts, 0));
+    g_assert_cmphex(rd(qts, DS_CFG), ==, 1 << 10);
+    qtest_clock_step(qts, 200 * MSEC);
+    /* the reset has put everything back */
+    g_assert_false(qtest_get_irq(qts, 0));
+    g_assert_cmphex(rd(qts, DS_CFG), ==, 0);
+    g_assert_cmphex(rd(qts, CPU_CTRL), ==, 0);
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -173,5 +325,10 @@ int main(int argc, char **argv)
     qtest_add_func("/atbm-hera/smu/adc", test_adc);
     qtest_add_func("/atbm-hera/smu/wake", test_wake);
     qtest_add_func("/atbm-hera/smu/cpu-hold", test_cpu_hold);
+    qtest_add_func("/atbm-hera/smu/power/standby", test_standby);
+    qtest_add_func("/atbm-hera/smu/power/light-rtc", test_light_rtc);
+    qtest_add_func("/atbm-hera/smu/power/light-rtc-off", test_light_rtc_off);
+    qtest_add_func("/atbm-hera/smu/power/light-gpio", test_light_gpio);
+    qtest_add_func("/atbm-hera/smu/power/deep", test_deep);
     return g_test_run();
 }
