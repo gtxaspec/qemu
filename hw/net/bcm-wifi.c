@@ -75,6 +75,7 @@
 #define WLC_SET_SCAN_UNASSOC_TIME 187
 #define WLC_SCB_DEAUTHENTICATE_FOR_REASON 201
 #define WLC_GET_VALID_CHANNELS  217
+#define WLC_SET_FAKEFRAG        219     /* frameburst */
 #define WLC_SET_KEY_PRIMARY     236
 #define WLC_SET_SCAN_PASSIVE_TIME 258
 #define WLC_GET_VAR             262
@@ -847,7 +848,8 @@ static const char *const bcm_iovars_ignored[] = {
     "assoc_retry_max", "buf_key_b4_m4", "bus:txglomalign", "arpoe",
     "arp_ol", "bw_cap", "ap_isolate", "closednet", "pmkid_info",
     "tdls_enable", "tdls_auto_op", "vndr_ie", "wsec_key", "country",
-    "mcast_list", "allmulti",
+    "mcast_list", "allmulti", "join_pref", "qtxpower", "clmload",
+    "txcapload", "pm2_sleep_ret",
 };
 
 /*
@@ -944,6 +946,15 @@ static int bcm_iovar(BcmCore *c, const char *name, bool set,
         memcpy(buf + 8, "US", 2);
         return BCME_OK;
     }
+    if (!strcmp(name, "qtxpower")) {
+        /* quarter dBm; the model has no radio, so a typical 17 dBm */
+        return bcm_get_int(buf, len, 17 * 4);
+    }
+    if (!strcmp(name, "clmload_status") ||
+        !strcmp(name, "txcapload_status")) {
+        /* the blob went in whole */
+        return bcm_get_int(buf, len, 0);
+    }
     if (!strcmp(name, "nmode") || !strcmp(name, "mimo_bw_cap") ||
         !strcmp(name, "per_chan_info")) {
         return bcm_get_int(buf, len, 0);
@@ -981,10 +992,18 @@ static int bcm_iovar(BcmCore *c, const char *name, bool set,
         memcpy(buf, c->resp_ies, MIN(len, c->resp_ies_len));
         return BCME_OK;
     }
+    if (!strcmp(name, "wme_ac_sta")) {
+        /* the four access categories' EDCF parameters: none set here */
+        memset(buf, 0, len);
+        return BCME_OK;
+    }
     if (!strcmp(name, "sta_info")) {
         /* sta_info_t: version, length, capability, flags, idle, address */
-        if (vlen < 6 || len < 48 || !c->peer_assoc ||
-            memcmp(val, c->peer.a, 6)) {
+        bool peer = c->peer_assoc && vlen >= 6 && !memcmp(val, c->peer.a, 6);
+        bool ap = c->sta == BCM_STA_ASSOCIATED && vlen >= 6 &&
+                  !memcmp(val, c->bssid.a, 6);
+
+        if (len < 48 || !(peer || ap)) {
             return BCME_NOTFOUND;
         }
         memset(buf, 0, 48);
@@ -992,7 +1011,7 @@ static int bcm_iovar(BcmCore *c, const char *name, bool set,
         stw_le_p(buf + 2, 48);
         stw_le_p(buf + 4, WIFI_CAP_ESS);
         stl_le_p(buf + 8, WL_STA_AUTHE | WL_STA_ASSOC | WL_STA_AUTHO);
-        memcpy(buf + 16, c->peer.a, 6);
+        memcpy(buf + 16, val, 6);
         return BCME_OK;
     }
     return BCME_UNSUPPORTED;
@@ -1174,6 +1193,7 @@ static int bcm_ioctl(BcmCore *c, uint32_t cmd, bool set, uint8_t *buf,
     case WLC_SET_SCAN_UNASSOC_TIME:
     case WLC_SET_KEY_PRIMARY:
     case WLC_SET_SCAN_PASSIVE_TIME:
+    case WLC_SET_FAKEFRAG:
         return BCME_OK;
     }
     return BCME_UNSUPPORTED;
